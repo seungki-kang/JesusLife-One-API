@@ -9,7 +9,21 @@
 - GET /api/v1/neorang-narang/health: 너랑나랑 모듈 상태 반환
 - /docs, /redoc, /openapi.json: FastAPI 기본 API 문서
 
-DB, 인증, 너랑나랑을 포함한 제품별 업무 API는 아직 구현하지 않았습니다.
+DB, 실제 인증 제공자 연결, 너랑나랑을 포함한 제품별 업무 API는 아직 구현하지 않았습니다.
+
+`app/core/auth.py`는 공통 계정 UUID `sub`만 보유하는 불변 `AuthContext`,
+기본적으로 항상 401을 반환하는 `get_current_user`, 서버가 보유한 owner sub와
+현재 sub가 다르면 403을 반환하는 `require_record_owner` 기반을 제공합니다.
+본문·쿼리·미검증 헤더로 인증하거나 소유자를 결정하지 않습니다. 새 기록의 소유자는
+향후 검증된 `current_user.sub`에서 정해야 합니다. 인증 오류는 고정 메시지만 반환하며
+이 코드에서 사용자 ID나 민감 원문을 로깅하지 않습니다. 모델 검증 오류를 외부에
+반환할 때에도 입력을 포함한 오류 자료를 직렬화하지 않아야 합니다.
+
+기존 공개 경로에는 인증을 추가하지 않았습니다. 테스트 전용 앱에서만 dependency
+override와 합성 UUID로 401·403·동일 소유자 통과를 검증합니다. 실제 제공자 검증,
+세션·scope·동의와 운영 로그 보호는 별도 AUTHOR_REVIEW_REQUIRED입니다.
+설계 초안의 향후 조회 API 404 정책과 이번 공통 guard의 403은 구분하며,
+기록 API를 연결하기 전에 외부 오류 계약을 검토해야 합니다.
 
 너랑나랑 상태 응답은 `{"status":"ok","service":"neorang-narang","version":"0.1.0"}`입니다.
 `app/modules/neorang_narang/router.py`에서 모듈 경로를 정의하고 `app/main.py`에서 등록합니다.
