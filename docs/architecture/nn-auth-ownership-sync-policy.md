@@ -1,4 +1,4 @@
-# JesusLife One 공통 인증과 너랑나랑 소유권·동기화 정책
+﻿# JesusLife One 공통 인증과 너랑나랑 소유권·동기화 정책
 
 상태: 설계 초안 / AUTHOR_REVIEW_REQUIRED. 기준일: 2026-10-26.
 작업 순서: 설계 → API 계약 초안 → 문서 품질 검토. 구현 승인을 의미하지 않는다.
@@ -193,7 +193,7 @@ completed_at은 최초 완료 사건의 기기 보고 시각으로 보존한다.
 
 ## 14. 향후 API 경로 초안
 
-모두 미구현이다. 실제 인증 제공자 확정에 따라 core 경로는 변경될 수 있다. 기존 `/`, `/health`, `/api/v1/neorang-narang/health`, `/docs`, `/redoc`, `/openapi.json`은 보존한다.
+2026-10-26 사용자 승인: 일반 단건 조회는 활성 기록만 반환하며 타인·없음·삭제 기록은 동일한 404다. tombstone은 내부 보존하고 향후 별도의 인증된 동기화 API에서만 조회한다. 이번 단계에는 동기화 API가 없다. 아래 나머지 경로는 향후 제안이며 core 경로는 인증 제공자 확정에 따라 변경될 수 있다. 기존 `/`, `/health`, `/api/v1/neorang-narang/health`, `/docs`, `/redoc`, `/openapi.json`은 보존한다.
 
 | 경로 후보 | 계약 요점 |
 |---|---|
@@ -204,7 +204,7 @@ completed_at은 최초 완료 사건의 기기 보고 시각으로 보존한다.
 | `DELETE /api/v1/me/consents/neorang-narang-sync` | 철회·삭제 접수, generation 폐기 |
 | `DELETE /api/v1/me`, `GET /api/v1/me/deletion-status` | 재인증 탈퇴·삭제 진행 조회용 제한 자격 설계 필요 |
 | `PUT /api/v1/neorang-narang/completion-records/{id}` | create 전용 b=0 r=1 envelope, upsert 금지 |
-| `GET /api/v1/neorang-narang/completion-records/{id}` | 소유자만 Metadata·현재 revision 조회, tombstone 포함 |
+| `GET /api/v1/neorang-narang/completions/{record_id}` | 소유자 활성 Metadata만 반환. 타인·없음·삭제는 동일한 404, owner 비노출 |
 | `POST /api/v1/neorang-narang/completion-records/{id}/updates` | b=s r=s+1 envelope |
 | `POST /api/v1/neorang-narang/completion-records/{id}/deletions` | 버전 있는 삭제 명령, 서버 tombstone |
 | `POST /api/v1/neorang-narang/completion-records/{id}/restorations` | 명시적 복원 명령 |
@@ -241,3 +241,15 @@ completed_at은 최초 완료 사건의 기기 보고 시각으로 보존한다.
 각 단계는 승인 범위만 진행한다. 기능 flag로 서버 동기화를 중지해도 로컬 기록을 유지해야 한다. DB 변경 후 이전 바이너리 설치만으로 롤백 성공을 주장하지 않는다. 실제 사용자 DB 대신 합성 자료로 검증한다. 배포·실제 외부 연결은 별도 승인 대상이다.
 
 문서 단계 품질 범위는 링크·경로, 필수 정책의 일관성, `git diff --check`, 두 저장소 status와 코드 무변경 확인이다. 인증 보안·동시성·DB·Flutter 실행·보유기간 운영 효과는 이 문서만으로 검증된 것이 아니며 NOT_RUN이다.
+
+### 개발용 메모리 API 계약
+
+서버 재시작 시 자료와 tombstone이 사라진다. 다중 worker 간 공유되지 않으며 운영 동기화 저장소가 아니다. 인증은 기존 fail-closed 의존성을 유지하고 테스트 dependency_overrides에서만 합성 사용자를 주입한다.
+
+- POST `/api/v1/neorang-narang/completions`: Metadata 본문, 최초 revision=1, deleted_at=null. 201 생성, 동일 소유자·ID·정규화된 내용의 활성 기록 재시도는 200, 다른 내용은 409. 다른 소유자의 같은 UUID는 독립된 키다.
+- GET 목록: 활성 Metadata 배열, limit 기본 10·허용 1~20. completed_at 내림차순, UUID 오름차순. cursor는 후속 과제다.
+- PUT `/{record_id}`: `{base_revision, metadata}` 전체 수정. id·completed_at 보존, deleted_at=null, 결과 revision=base+1. 현재 버전 불일치 및 오래된 기준 버전 재시도는 409다.
+- DELETE `/{record_id}`: `{base_revision, revision}`. 서버 UTC deleted_at과 증가 revision을 저장한다. 같은 삭제 기준·결과 버전 재시도는 200이며 추가 증가하지 않는다. 다른 삭제 버전은 409다.
+- 쓰기 성공 응답은 metadata·updated_at·applied_revision·current_revision·replayed envelope다. 조회는 Metadata이며 owner를 반환하지 않는다. 삭제 명령 ACK는 tombstone metadata를 반환하지만 일반 GET·PUT은 삭제 기록에 404다.
+- 이 최소 계약은 9~10절의 향후 operation UUID receipt·과거 명령 재생·복원·동기화 cursor를 구현하지 않는다. 후속 변경이 발생한 과거 생성 재시도는 409다. 일반 수정으로 완료 시각을 정정하지 않는다.
+- 검증 오류는 입력·임의 필드명을 반사하지 않는 고정 422 메시지다. 운영 access log·프록시·APM의 경로 식별자 차단 검증은 별도 AUTHOR_REVIEW_REQUIRED이며 실제 운영 승인을 뜻하지 않는다.

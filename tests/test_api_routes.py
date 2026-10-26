@@ -43,9 +43,11 @@ class ApiRoutesTest(unittest.TestCase):
         self.assertEqual(schema["info"]["version"], "0.1.0")
         self.assertEqual(
             set(schema["paths"]),
-            {"/", "/health", "/api/v1/neorang-narang/health"},
+            {"/", "/health", "/api/v1/neorang-narang/health",
+             "/api/v1/neorang-narang/completions",
+             "/api/v1/neorang-narang/completions/{record_id}"},
         )
-        for path in schema["paths"]:
+        for path in ("/", "/health", "/api/v1/neorang-narang/health"):
             with self.subTest(path=path):
                 self.assertIn("200", schema["paths"][path]["get"]["responses"])
 

@@ -1,4 +1,4 @@
-"""Metadata contract only; no persistence, ownership, or transport implementation.
+"""Metadata and minimal command contracts; no persistence or authentication here.
 
 Flutter SQLite remains authoritative. The app must supply a stable UUID instead
 of forwarding its legacy timestamp-based ID. Revision and deleted_at are sync
@@ -25,7 +25,7 @@ class ParticipationMode(StrEnum):
 class CompletionRecordMetadata(BaseModel):
     """Allowlisted projection of CompletionRecord, using snake_case API keys.
 
-    Revision starts at one; assigning/incrementing it is a future sync concern.
+    Revision starts at one; the service validates and increments server versions.
     A null deleted_at means active; a timestamp marks a soft deletion.
     Aware input offsets are normalized to UTC, including serialized output.
     This model does not authenticate a completion or authorize access.
@@ -67,3 +67,25 @@ class CompletionRecordMetadata(BaseModel):
     @classmethod
     def normalize_utc(cls, value: datetime | None) -> datetime | None:
         return None if value is None else value.astimezone(timezone.utc)
+
+
+class CompletionUpdate(BaseModel):
+    """Full metadata replacement; revision is the result, base is last seen."""
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True, frozen=True)
+    base_revision: int = Field(strict=True, ge=0)
+    metadata: CompletionRecordMetadata
+
+
+class CompletionDelete(BaseModel):
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True, frozen=True)
+    base_revision: int = Field(strict=True, ge=0)
+    revision: int = Field(strict=True, ge=1)
+
+
+class CompletionResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    metadata: CompletionRecordMetadata
+    updated_at: AwareDatetime
+    applied_revision: int
+    current_revision: int
+    replayed: bool
