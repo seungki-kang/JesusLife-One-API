@@ -6,9 +6,14 @@
 
 - GET /: 실행 안내 메시지
 - GET /health: status, service, version 반환
+- GET /api/v1/neorang-narang/health: 너랑나랑 모듈 상태 반환
 - /docs, /redoc, /openapi.json: FastAPI 기본 API 문서
 
 DB, 인증, 너랑나랑을 포함한 제품별 업무 API는 아직 구현하지 않았습니다.
+
+너랑나랑 상태 응답은 `{"status":"ok","service":"neorang-narang","version":"0.1.0"}`입니다.
+`app/modules/neorang_narang/router.py`에서 모듈 경로를 정의하고 `app/main.py`에서 등록합니다.
+이 상태 경로는 DB나 외부 서비스의 가용성을 검사하지 않습니다.
 
 ## 로컬 실행
 
@@ -24,10 +29,30 @@ requirements.txt에는 현재 실행에 직접 필요한 FastAPI와 Uvicorn만 �
 
 ## 검증과 관리
 
+현재 환경의 설치된 패키지를 사용하여 먼저 검사합니다. 테스트는 표준 `unittest`와
+FastAPI `TestClient`를 사용하며 실제 네트워크 서버를 열지 않습니다.
+
 ```powershell
+.\.venv\Scripts\python.exe -B -m unittest discover -s tests -v
+.\.venv\Scripts\python.exe -B -c "import ast; from pathlib import Path; files = sorted(Path('app').rglob('*.py')) + sorted(Path('tests').rglob('*.py')); [ast.parse(p.read_text(encoding='utf-8'), filename=str(p)) for p in files]; print(f'{len(files)} Python files: syntax OK')"
 .\.venv\Scripts\python.exe -B -m pip check
+git diff --check
+git status --short
 ```
 
-기존 자동 테스트 스위트는 아직 없습니다. 변경 시 GET /, GET /health, GET /openapi.json을 회귀 확인합니다.
+테스트는 GET /, GET /health, GET /api/v1/neorang-narang/health의 정확한 응답,
+GET /openapi.json의 경로·메타데이터, 잘못된 경로의 404를 검증합니다.
+문법 검사는 바이트코드 파일을 생성하지 않는 `ast.parse` 방식입니다.
+
+`requirements-dev.txt`는 실행 의존성과 테스트용 `httpx` 및 전이 의존성의 버전을
+검증 환경 기준으로 고정합니다. 테스트 실행기는 Python 내장 모듈이므로 pytest는 필요하지 않습니다.
+새 개발 환경에서는 Python 3.14.8 가상환경을 준비한 후, 패키지 설치가 승인된 경우에만 실행합니다.
+
+```powershell
+.\.venv\Scripts\python.exe -B -m pip install -r requirements-dev.txt
+```
+
+이는 해시를 포함한 배포용 lock 파일은 아니며, 다른 운영체제·Python 버전이나
+새 환경에서의 설치 재현 검증은 별도로 필요합니다.
 
 이 폴더는 독립 Git 저장소입니다. 상위 저장소는 수정하지 않습니다. .env·가상환경·캐시를 추적하지 않으며, .env.example을 만들 경우 비밀정보 없는 예시만 넣습니다.
