@@ -9,18 +9,26 @@
 - GET /api/v1/neorang-narang/health: 너랑나랑 모듈 상태 반환
 - /docs, /redoc, /openapi.json: FastAPI 기본 API 문서
 
-DB와 실제 인증 제공자 연결은 없습니다. 너랑나랑 완료 메타데이터의 개발용 메모리 API를 제공합니다. 재시작 시 자료가 사라지고 다중 worker에서 공유되지 않습니다. 계약과 제한은 [정책 문서 14절](docs/architecture/nn-auth-ownership-sync-policy.md)을 참조하세요. 실제 인증은 항상 401이며 테스트에서만 합성 사용자로 교체합니다.
+너랑나랑 완료 메타데이터는 개발용 메모리 저장소 또는 로컬 MySQL에 저장할 수 있습니다.
+이번 로컬 환경의 `.env`는 MySQL을 선택합니다. `.env`나 명시적 설정이 없으면 기존 메모리
+모드이며, 메모리 모드는 재시작 시 자료가 사라지고 다중 worker에서 공유되지 않습니다.
+계약과 제한은 [정책 문서 14절](docs/architecture/nn-auth-ownership-sync-policy.md),
+구성과 migration·백업·복구는 [로컬 MySQL 안내](docs/local-mysql.md)를 참조하세요.
+기본 `app.main:app`의 기록 API 인증은 항상 401입니다. 별도 개발 진입점
+`app.auth0_pc:app`은 Core 영속 세션과 실제 Auth0 PC 연결을 제공합니다.
+[실행 안내](docs/local-core-auth.md)와 [사용자 전달 A/B 인수 PASS](docs/verification/2026-10-30-auth0-ab-acceptance.md)를 참조하세요.
+모바일·운영 배포·실제 서버 재시작 인수는 NOT_RUN입니다.
 
 `app/core/auth.py`는 공통 계정 UUID `sub`만 보유하는 불변 `AuthContext`,
-기본적으로 항상 401을 반환하는 `get_current_user`, 서버가 보유한 owner sub와
+기본 앱에서는 401을 반환하고 별도 PC 앱에서는 검증된 runtime을 사용하는 `get_current_user`, 서버가 보유한 owner sub와
 현재 sub가 다르면 403을 반환하는 `require_record_owner` 기반을 제공합니다.
 본문·쿼리·미검증 헤더로 인증하거나 소유자를 결정하지 않습니다. 새 기록의 소유자는
 향후 검증된 `current_user.sub`에서 정해야 합니다. 인증 오류는 고정 메시지만 반환하며
 이 코드에서 사용자 ID나 민감 원문을 로깅하지 않습니다. 모델 검증 오류를 외부에
 반환할 때에도 입력을 포함한 오류 자료를 직렬화하지 않아야 합니다.
 
-기존 공개 경로에는 인증을 추가하지 않았습니다. 테스트 전용 앱에서만 dependency
-override와 합성 UUID로 401·403·동일 소유자 통과를 검증합니다. 실제 제공자 검증,
+기존 공개 경로에는 인증을 추가하지 않았습니다. 테스트에서는 dependency
+override와 합성 UUID로 401·403·동일 소유자 통과를 검증합니다. 운영 제공자 검증,
 세션·scope·동의와 운영 로그 보호는 별도 AUTHOR_REVIEW_REQUIRED입니다.
 설계 초안의 향후 조회 API 404 정책과 이번 공통 guard의 403은 구분하며,
 완료 기록 API는 소유자 필터를 적용하고 guard 거부도 동일한 404로 변환합니다.
@@ -39,7 +47,7 @@ override와 합성 UUID로 401·403·동일 소유자 통과를 검증합니다.
 
 브라우저에서 http://127.0.0.1:8000/health 또는 http://127.0.0.1:8000/docs를 확인합니다.
 
-requirements.txt에는 현재 실행에 직접 필요한 FastAPI와 Uvicorn만 명시합니다. 전체 전이 의존성 lock 파일은 아닙니다.
+requirements.txt에는 FastAPI·Uvicorn·MySQL 드라이버와 환경 파일 로더를 명시합니다. 전체 전이 의존성 lock 파일은 아닙니다.
 
 ## 검증과 관리
 

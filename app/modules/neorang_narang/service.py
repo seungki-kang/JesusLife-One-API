@@ -1,4 +1,4 @@
-﻿"""Owner-scoped metadata operations; no identity or sensitive content in errors."""
+"""Owner-scoped metadata operations; no identity or sensitive content in errors."""
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -34,7 +34,7 @@ class CompletionService:
                                 current_revision=record.metadata.revision, replayed=replayed)
 
     def create(self, metadata: CompletionRecordMetadata) -> tuple[CompletionResult, bool]:
-        with self.store.transaction():
+        with self.store.transaction(self.user.sub):
             if metadata.deleted_at is not None:
                 fail(422, 'Invalid command')
             if metadata.revision != 1:
@@ -49,11 +49,11 @@ class CompletionService:
             return self.result(record), True
 
     def get(self, record_id: UUID) -> CompletionRecordMetadata:
-        with self.store.transaction():
+        with self.store.transaction(self.user.sub):
             return self._get(record_id).metadata
 
     def list(self, limit: int) -> list[CompletionRecordMetadata]:
-        with self.store.transaction():
+        with self.store.transaction(self.user.sub):
             records = [r.metadata for r in self.store.list_for_owner(self.user.sub)
                        if r.metadata.deleted_at is None]
             records.sort(key=lambda r: r.id.int)
@@ -61,7 +61,7 @@ class CompletionService:
             return records[:limit]
 
     def update(self, record_id: UUID, base: int, metadata: CompletionRecordMetadata) -> CompletionResult:
-        with self.store.transaction():
+        with self.store.transaction(self.user.sub):
             current = self._get(record_id)
             if metadata.id != record_id or metadata.deleted_at is not None or metadata.completed_at != current.metadata.completed_at:
                 fail(422, 'Invalid command')
@@ -72,7 +72,7 @@ class CompletionService:
             return self.result(record)
 
     def delete(self, record_id: UUID, base: int, revision: int) -> CompletionResult:
-        with self.store.transaction():
+        with self.store.transaction(self.user.sub):
             current = self._get(record_id, active=False)
             if current.metadata.deleted_at is not None:
                 if current.delete_base == base and current.metadata.revision == revision:

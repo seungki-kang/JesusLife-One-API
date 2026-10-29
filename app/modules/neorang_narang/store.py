@@ -1,4 +1,4 @@
-﻿"""Development-only process memory; restart loses all records and tombstones."""
+"""Completion persistence contract and development-only process memory implementation."""
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -18,7 +18,7 @@ class StoredCompletion:
 
 
 class CompletionStore(Protocol):
-    def transaction(self): ...
+    def transaction(self, owner: UUID): ...
     def get(self, owner: UUID, record_id: UUID) -> StoredCompletion | None: ...
     def save(self, record: StoredCompletion) -> None: ...
     def list_for_owner(self, owner: UUID) -> list[StoredCompletion]: ...
@@ -30,7 +30,7 @@ class InMemoryCompletionStore:
         self._lock = RLock()
 
     @contextmanager
-    def transaction(self) -> Iterator[None]:
+    def transaction(self, owner: UUID | None = None) -> Iterator[None]:
         """Serialize the entire read/compare/write, including concurrent retries."""
         with self._lock:
             yield
@@ -49,4 +49,12 @@ _store = InMemoryCompletionStore()
 
 
 def get_completion_store() -> CompletionStore:
-    return _store
+    from app.core.database import settings
+    from fastapi import HTTPException
+    backend = settings().get('COMPLETION_STORE', 'memory')
+    if backend == 'memory':
+        return _store
+    if backend == 'mysql':
+        from .mysql_store import MySQLCompletionStore
+        return MySQLCompletionStore()
+    raise HTTPException(503, 'Storage unavailable')

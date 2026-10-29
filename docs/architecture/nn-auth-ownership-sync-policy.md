@@ -242,9 +242,12 @@ completed_at은 최초 완료 사건의 기기 보고 시각으로 보존한다.
 
 문서 단계 품질 범위는 링크·경로, 필수 정책의 일관성, `git diff --check`, 두 저장소 status와 코드 무변경 확인이다. 인증 보안·동시성·DB·Flutter 실행·보유기간 운영 효과는 이 문서만으로 검증된 것이 아니며 NOT_RUN이다.
 
-### 개발용 메모리 API 계약
+### 개발용 완료 API 계약
 
-서버 재시작 시 자료와 tombstone이 사라진다. 다중 worker 간 공유되지 않으며 운영 동기화 저장소가 아니다. 인증은 기존 fail-closed 의존성을 유지하고 테스트 dependency_overrides에서만 합성 사용자를 주입한다.
+2026-10-29 사용자 승인으로 [로컬 MySQL 저장소](../local-mysql.md)를 추가했다.
+메모리 모드는 서버 재시작 시 자료와 tombstone이 사라지고 다중 worker 간 공유되지 않는다.
+MySQL 모드는 자료를 영속화하지만 운영 동기화 저장소 승인을 뜻하지 않는다. 인증은 기존
+fail-closed 의존성을 유지하고 테스트 dependency_overrides에서만 합성 사용자를 주입한다.
 
 - POST `/api/v1/neorang-narang/completions`: Metadata 본문, 최초 revision=1, deleted_at=null. 201 생성, 동일 소유자·ID·정규화된 내용의 활성 기록 재시도는 200, 다른 내용은 409. 다른 소유자의 같은 UUID는 독립된 키다.
 - GET 목록: 활성 Metadata 배열, limit 기본 10·허용 1~20. completed_at 내림차순, UUID 오름차순. cursor는 후속 과제다.

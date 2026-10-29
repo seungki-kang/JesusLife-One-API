@@ -162,7 +162,9 @@ class CompletionApiTest(unittest.TestCase):
                 service.get(UUID(metadata()['id']))
             self.assertEqual(caught.exception.status_code, 404)
         app.dependency_overrides.pop(get_completion_store)
-        self.assertEqual(self.client.get(PATH).json(), [])
+        import os
+        with patch.dict(os.environ, {'COMPLETION_STORE': 'memory'}):
+            self.assertEqual(self.client.get(PATH).json(), [])
 
     def test_validation_on_commands_and_paths_is_safe(self):
         self.create()

@@ -1,5 +1,8 @@
 # Runtime and test dependency closure, pinned to the verified Python 3.14.8 environment.
 -r requirements.txt
+cffi==2.1.1
+cryptography==50.0.2
+pycparser==3.12
 annotated-doc==0.0.5
 annotated-types==0.8.0
 anyio==4.15.1

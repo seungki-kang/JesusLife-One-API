@@ -2,7 +2,7 @@
 
 from uuid import UUID
 
-from fastapi import HTTPException, status
+from fastapi import HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -19,12 +19,16 @@ class AuthContext(BaseModel):
     sub: UUID = Field(repr=False)
 
 
-def get_current_user() -> AuthContext:
-    """Fail closed until an approved authentication adapter is implemented.
+def get_current_user(request: Request) -> AuthContext:
+    """Use the verified PC adapter only on its explicit application instance.
 
     Tests may use FastAPI dependency_overrides on isolated test applications.
-    Production has no fake identity, header shortcut, or configuration bypass.
+    The ordinary app remains fail-closed. There is no fake identity, header
+    shortcut or request-controlled adapter selection.
     """
+    runtime = getattr(request.app.state, 'auth_runtime', None)
+    if runtime is not None:
+        return runtime.identity(request)
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Authentication required",
