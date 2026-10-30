@@ -14,6 +14,8 @@
 모드이며, 메모리 모드는 재시작 시 자료가 사라지고 다중 worker에서 공유되지 않습니다.
 계약과 제한은 [정책 문서 14절](docs/architecture/nn-auth-ownership-sync-policy.md),
 구성과 migration·백업·복구는 [로컬 MySQL 안내](docs/local-mysql.md)를 참조하세요.
+모바일 migration 전후의 전체 백업·격리 복원 도구와 실제 실행 전 조건은
+[모바일 백업 리허설](docs/mobile-backup-rehearsal.md)에 정리했습니다. 실제 MySQL 리허설은 NOT_RUN입니다.
 기본 `app.main:app`의 기록 API 인증은 항상 401입니다. 별도 개발 진입점
 `app.auth0_pc:app`은 Core 영속 세션과 실제 Auth0 PC 연결을 제공합니다.
 [실행 안내](docs/local-core-auth.md)와 [사용자 전달 A/B 인수 PASS](docs/verification/2026-10-30-auth0-ab-acceptance.md)를 참조하세요.
