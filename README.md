@@ -17,7 +17,8 @@
 기본 `app.main:app`의 기록 API 인증은 항상 401입니다. 별도 개발 진입점
 `app.auth0_pc:app`은 Core 영속 세션과 실제 Auth0 PC 연결을 제공합니다.
 [실행 안내](docs/local-core-auth.md)와 [사용자 전달 A/B 인수 PASS](docs/verification/2026-10-30-auth0-ab-acceptance.md)를 참조하세요.
-모바일·운영 배포·실제 서버 재시작 인수는 NOT_RUN입니다.
+[API 재시작 세션 복원·MySQL 체크포인트 비교](docs/verification/2026-10-30-restart-verification.md)는 사용자 전달 PASS입니다.
+MySQL 실제 중지·재시작은 실행 로그 미확인이며, 모바일·운영 배포는 NOT_RUN입니다.
 
 `app/core/auth.py`는 공통 계정 UUID `sub`만 보유하는 불변 `AuthContext`,
 기본 앱에서는 401을 반환하고 별도 PC 앱에서는 검증된 runtime을 사용하는 `get_current_user`, 서버가 보유한 owner sub와

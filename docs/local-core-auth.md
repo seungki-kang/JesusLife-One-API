@@ -137,4 +137,6 @@ Core DB/세션/제품 기록은 보존한다.
 제한: 자체 제한형 JWT parser는 개발 PoC 범위다. 운영 JWT 라이브러리/보안 검토·실제 Auth0
 key rotation 상호운용·브라우저 다중 tab·보안/복구 이벤트·운영 Secure cookie/TLS·보유/정리 정책은
 별도 단계다. 실제 외부 Auth0 A/B PC 연결은 사용자 전달 인수 PASS이며,
-모바일·운영 적용과 실제 서버 재시작 인수는 NOT_RUN이다.
+유효한 토큰과 기존 브라우저 쿠키를 사용한 실제 API 프로세스 재시작 후 세션 복원은
+[사용자 전달 PASS](verification/2026-10-30-restart-verification.md)다.
+모바일·운영 적용과 토큰 만료 후 처리는 NOT_RUN이다.
