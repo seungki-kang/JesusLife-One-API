@@ -80,4 +80,20 @@ GET /openapi.json의 경로·메타데이터, 잘못된 경로의 404를 검증�
 이는 해시를 포함한 배포용 lock 파일은 아니며, 다른 운영체제·Python 버전이나
 새 환경에서의 설치 재현 검증은 별도로 필요합니다.
 
+### 오프라인 CI
+
+`.github/workflows/offline-tests.yml`은 main 대상 PR(초안 포함)과 main 및
+feature/nn-completion-contract push에서 Ubuntu 24.04·Python 3.14.8로 실행합니다.
+제한 시간은 10분, 권한은 `contents: read`이며 `requirements-dev.txt`의 기존
+고정 의존성을 설치한 뒤 `python -B -m pip check`와
+`python -B -m scripts.test_offline`을 실행합니다. 로컬 명령은
+`.\.venv\Scripts\python.exe -B -m scripts.test_offline`입니다.
+러너는 테스트 import 전에 상속 환경을 정리하고 환경 파일·MySQL·외부 네트워크를
+차단합니다. 합성 임시 SQLite와 mock만 사용하며 실제 DB·Docker·Auth0·비밀정보는
+필요하지 않습니다. 기존 opt-in skip과 unittest의 전체/skip 집계를 유지합니다.
+로컬 검증은 134개 중 112개 PASS·22개 SKIP이며, GitHub에서의 실행 결과는 별도입니다.
+액션 SHA는 공식 [checkout v4.2.2](https://github.com/actions/checkout/releases/tag/v4.2.2)와
+[setup-python v5.6.0](https://github.com/actions/setup-python/releases/tag/v5.6.0)의
+커밋 링크에서 확인했습니다.
+
 이 폴더는 독립 Git 저장소입니다. 상위 저장소는 수정하지 않습니다. .env·가상환경·캐시를 추적하지 않으며, .env.example을 만들 경우 비밀정보 없는 예시만 넣습니다.
