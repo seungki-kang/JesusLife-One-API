@@ -80,12 +80,18 @@ class Auth0Provider:
     def verify_access(self, raw, *, now):
         return OfflineAccessVerifier(self.config.policy, self.keys_for(raw, now), self.config.hmac_key).verify(raw, now=now)
 
-    def exchange(self, *, code, verifier, nonce_hash, now):
+    def exchange(self, *, code, verifier, nonce_hash, now,
+                 redirect_uri='http://127.0.0.1:8000/api/v1/auth/callback/web'):
+        if redirect_uri not in (
+            'http://127.0.0.1:8000/api/v1/auth/callback/web',
+            'http://127.0.0.1:8000/api/v1/auth/callback/android',
+        ):
+            raise denied()
         with stage('token_exchange_pkce'):
             payload = self._request('POST', 'oauth/token', data={
                 'grant_type': 'authorization_code', 'client_id': next(iter(self.config.policy.client_ids)),
                 'client_secret': self.config.client_secret, 'code': code, 'code_verifier': verifier,
-                'redirect_uri': 'http://127.0.0.1:8000/api/v1/auth/callback/web'})
+                'redirect_uri': redirect_uri})
         try:
             with stage('token_response'):
                 if not isinstance(payload, dict) or not isinstance(payload.get('token_type'), str):

@@ -41,3 +41,9 @@ Thumbs.db
 
 # Local logs
 *.log
+
+# Protected full mobile backup and rehearsal artifacts
+.mobile-backups/
+
+# Obsolete mobile staging artifacts; retained files must not be applied
+/.mobile-stage/

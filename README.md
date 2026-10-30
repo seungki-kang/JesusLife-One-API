@@ -14,6 +14,8 @@
 모드이며, 메모리 모드는 재시작 시 자료가 사라지고 다중 worker에서 공유되지 않습니다.
 계약과 제한은 [정책 문서 14절](docs/architecture/nn-auth-ownership-sync-policy.md),
 구성과 migration·백업·복구는 [로컬 MySQL 안내](docs/local-mysql.md)를 참조하세요.
+모바일 migration 전후의 전체 백업·격리 복원 도구와 실제 실행 전 조건은
+[모바일 백업 리허설](docs/mobile-backup-rehearsal.md)에 정리했습니다. 실제 MySQL 리허설은 NOT_RUN입니다.
 기본 `app.main:app`의 기록 API 인증은 항상 401입니다. 별도 개발 진입점
 `app.auth0_pc:app`은 Core 영속 세션과 실제 Auth0 PC 연결을 제공합니다.
 [실행 안내](docs/local-core-auth.md)와 [사용자 전달 A/B 인수 PASS](docs/verification/2026-10-30-auth0-ab-acceptance.md)를 참조하세요.
@@ -77,5 +79,21 @@ GET /openapi.json의 경로·메타데이터, 잘못된 경로의 404를 검증�
 
 이는 해시를 포함한 배포용 lock 파일은 아니며, 다른 운영체제·Python 버전이나
 새 환경에서의 설치 재현 검증은 별도로 필요합니다.
+
+### 오프라인 CI
+
+`.github/workflows/offline-tests.yml`은 main 대상 PR(초안 포함)과 main 및
+feature/nn-completion-contract push에서 Ubuntu 24.04·Python 3.14.8로 실행합니다.
+제한 시간은 10분, 권한은 `contents: read`이며 `requirements-dev.txt`의 기존
+고정 의존성을 설치한 뒤 `python -B -m pip check`와
+`python -B -m scripts.test_offline`을 실행합니다. 로컬 명령은
+`.\.venv\Scripts\python.exe -B -m scripts.test_offline`입니다.
+러너는 테스트 import 전에 상속 환경을 정리하고 환경 파일·MySQL·외부 네트워크를
+차단합니다. 합성 임시 SQLite와 mock만 사용하며 실제 DB·Docker·Auth0·비밀정보는
+필요하지 않습니다. 기존 opt-in skip과 unittest의 전체/skip 집계를 유지합니다.
+로컬 검증은 134개 중 112개 PASS·22개 SKIP이며, GitHub에서의 실행 결과는 별도입니다.
+액션 SHA는 공식 [checkout v4.2.2](https://github.com/actions/checkout/releases/tag/v4.2.2)와
+[setup-python v5.6.0](https://github.com/actions/setup-python/releases/tag/v5.6.0)의
+커밋 링크에서 확인했습니다.
 
 이 폴더는 독립 Git 저장소입니다. 상위 저장소는 수정하지 않습니다. .env·가상환경·캐시를 추적하지 않으며, .env.example을 만들 경우 비밀정보 없는 예시만 넣습니다.

@@ -106,6 +106,9 @@ def create_app(runtime=None):
                 raise HTTPException(503, 'Authentication unavailable')
         return value
 
+    from app.core.mobile_routes import install_mobile
+    install_mobile(app, current)
+
     @app.get('/health')
     def health():
         return {'status': 'ok', 'service': 'jesuslife-pc-poc'}
