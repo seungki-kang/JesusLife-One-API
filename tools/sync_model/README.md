@@ -76,7 +76,7 @@ git diff --check
 | 의도적 결함 | 고유 상태 | 검사 전이 | 최단 반례 | 탐지한 위반 |
 |---|---:|---:|---|---|
 | F 검사 제거 | 487 | 3,213 | `admit_old → A → F → commit_old` | F 뒤 폐기 세대 commit |
-| sync ID 장벽 검사 제거 | 117 | 483 | `admit_old → delete → commit_old` | 삭제 ID 재생성 |
+| sync ID 장벽 검사 제거 | 46 | 121 | `delete → admit_old` | 삭제 ID 재생성 |
 | 관리에도 업로드 동의 요구 | 36 | 95 | `A → A` | 철회로 동의가 사라진 뒤 멱등 철회 관리 재개 거부 |
 
 ## 가정·생략·NOT_RUN

@@ -311,9 +311,11 @@ Core가 제품 DB 자격·내부 모델을 보유하거나 교차 JOIN/FK/cascad
 
 ## 12. 이번 문서 작업의 검증 범위
 
-이번 보정은 이 제안서와 [독립 실행 명세](../../tools/sync_model/README.md)만 변경한다.
+이번 PR은 제안 설계, [독립 합성 모델과 테스트](../../tools/sync_model/README.md),
+전용 sync-model workflow(`.github/workflows/sync-model.yml`)를 포함한다.
 모델은 표준 라이브러리와 메모리의 합성 계정·ID·metadata 존재 추상값만 사용한다.
-앱 import, 기존 API/CI/offline runner 연결, DB·파일 영속화·네트워크·환경 설정은 없다.
+새 전용 CI는 모델 테스트와 탐색을 실행하며, 기존 API CI와 API offline runner는 변경하지 않는다.
+모델은 앱 import나 기존 API offline runner 연결 없이 실행하며 DB·파일 영속화·네트워크·환경 설정을 사용하지 않는다.
 실행 명령·unittest 수·고유 상태 수·검사 전이 수·한계와 음성 대조군 최단 반례는 모델 README와
 작업 보고에 기록한다. 선택 trace와 유한 탐색은 전체 증명이나 실제 transaction 검증이 아니다.
 일반 `git diff --check`와 별도로 미추적 제안서·모델 파일의 whitespace를 검사한다.
