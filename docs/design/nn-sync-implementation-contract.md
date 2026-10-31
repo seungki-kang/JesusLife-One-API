@@ -355,7 +355,93 @@ payload 최소화·원문 비교 전 거부를 근거로 하며 공개 삭제 DT
 
 메모리의 live 참조 제거만 검증했으며 물리적 완전 삭제가 아니다. 과거 반환 ACK·호출자 입력·
 외부 snapshot은 제거하지 못한다. 단일 인스턴스·순차 호출·비재진입 시계 한계는 그대로다.
+당시 미구현(역사 기록; 현재 내부 합성 generation 전이는 [11절](#11-합성-메모리-generation-gate와-폐쇄-구현-기록) 참조):
 현재 권한/동의 검사·generation 철회·Core fence·보유기간·영속성·동시성·프로세스 종료·backup 복구·
 실제 삭제 API·HTTP/운영 로그 경로는 범위 밖이다. 이번 테스트는 실제 동의·철회·삭제 안전성의 증거가 아니다.
 실제 자료 수집 **BLOCKED**, 앱 적용 **AUTHOR_REVIEW_REQUIRED** 유지.
 실제 DB·기기·앱 통합·CI·migration·배포는 **NOT_RUN**. 네트워크·설치·서버 실행·commit·push·PR·병합은 하지 않았다.
+
+## 11. 합성 메모리 generation gate와 폐쇄 구현 기록
+
+2026-10-31. 시작 브랜치 `feature/nn-real-sync-generation-fence`, HEAD
+`5beba57a08e293b4fa186a33b18817b8a99c0f18` (PR #11 병합), clean을 직접 확인했다.
+이전 서비스·DTO **42 PASS**, offline **154 PASS·22 SKIP**은 이전 이력이며 이번 실행과 구분한다.
+허용 변경은 [후보](../../app/modules/neorang_narang/real_sync_candidate.py),
+[합성 테스트](../../tests/test_nn_real_sync_candidate.py), 이 문서뿐이다.
+계약 [4.3절](#43-core와-제품-commit철회)과 P 13.3~13.4의 단조 fence·재생 차단·최소화를
+근거로 내부 제품 gate만 구현했다. 아래 strict 양의 정수 순서는 이 실험의 **PROPOSED** 규칙이며
+Core 세대 발급 계약이나 실제 동의/정책 지원의 승인으로 확정하지 않는다. 기존 DTO는 strict int의
+형태만 검사하는 계약을 유지하며, 양의 정수 제한은 후보 서비스의 내부 검증에만 추가했다.
+
+### 전이와 판정 순서
+
+계정별 `opened[owner]`는 현재 열린 세대 또는 부재, `retired[owner]`는 영구 폐쇄한
+`retired-through` 경계(부재 시 0)다. 초기 상태는 닫힘이며 create는 세대를 자동 open하지 않는다.
+`open_generation(context, g)` / `close_generation(context, g)`는 명시 합성 전이이며 반환은
+`None`이다. exact 합성 context/UUID와 `type(g) is int`, `g > 0`을 검사한다.
+bool/string/float/0/음수 등은 고정 `invalid_candidate_input`이며 상태를 바꾸지 않는다.
+
+| 입력/현재 상태 | 결과 |
+|---|---|
+| open(g), g ≤ retired-through | `operation_retired`, 상태 불변 |
+| open(g), 같은 g가 이미 열림 | 멱등, 상태 불변 |
+| open(g), 다른 세대가 열림 | 낮은/높은 값 모두 `unsupported_candidate_path`; close 없는 교체 금지 |
+| open(g), 닫힘이며 g > retired-through | 그 g만 open; 기존 장벽은 유지 |
+| close(g), 모든 상태 | 경계를 max(기존 경계, g)로 갱신; 경계 이하 현재 open만 닫음 |
+| 반복/역순 close(g) | 경계는 낮아지지 않음; 경계보다 높은 open·record·receipt는 유지 |
+| create/replay, 폐쇄 세대 | 부재 기록도 `operation_retired`; 원명령 비교·과거 성공 ACK 전에 거부 |
+| create/replay, 미개방/미래 세대 | `generation_not_open`; 현재 open과 일치하는 세대만 진행 |
+
+생성·동일 명령 재생은 **입력 재검증(내부 양의 정수 포함) → erased owner+operation →
+owner+sync_id 장벽 → 요청 g ≤ retired-through → 요청 g와 현재 open 일치 → 활성 receipt의
+정규화 원명령 비교/재생 → 기존 sync_id 충돌 검사 → 신규 생성** 순서다. 앞의 장벽/폐쇄는
+고정 내부 `operation_retired`이며, 원문 비교·시계 호출·성공 ACK 구성 전에 검사한다.
+열리지 않은 세대로 바꾼 명령은 명령 충돌 비교보다 gate에서 거부한다. HTTP 상태/오류로 연결하지 않았다.
+이미 erased인 operation은 sync_id/generation을 바꿔도 재사용할 수 없다.
+새 세대에서 새 operation+새 sync_id의 **별도 합성 기록**만 생성 가능함을 검증했다.
+새 UUID로 옛 실제 기록을 재업로드할 자격을 허용한 것이 아니며, 그 자격 판정은 미구현이다.
+
+### 상태·최소화·실패 경계
+
+단일 상태 tuple은 `(records, receipts, sync_barriers, opened, retired)`다.
+활성 record는 정규화 명령 JSON·revision·generation, 활성 receipt는 정규화 명령 JSON·
+sync_id·applied_revision·received_at·generation을 명시 보유한다. generation은 payload를
+다시 파싱하지 않고 폐쇄 대상을 판정하기 위한 최소 필드다. 전체 명령은 활성 멱등 비교에만 쓴다.
+close(g)는 해당 계정 경계 이하 record payload를 제거하고 모든 관련 활성 receipt를
+내용 없는 `_ErasedReceipt`로 바꾼다. erased receipt는 owner+operation dict 키와 상태만 남고
+원명령·metadata·시각·generation·sync_id·revision·hash·성공 body를 다시 넣지 않는다.
+제거한 record 및 최소화한 receipt의 sync_id는 별도 owner+sync_id 장벽에 남는다.
+기존 단건 retire 장벽·erased operation은 어떤 open/close에서도 제거하지 않는다.
+owner/불투명 ID 장벽·계정별 경계 자체는 잔존 연결정보이며 보유 정책 승인이 아니다.
+
+close의 경계 dict·open dict·record/receipt 복사본·불변 장벽을 준비한 뒤 단일 상태 참조를
+한 번 교체한다. 준비 중 오류는 고정 `candidate_preparation_failed`이며 전체 값과 원래 상태
+참조가 유지된다. 기존 `_ErasedReceipt` 생성자 patch로 첫 receipt 준비 후 두 번째에서 실패를
+주입하고 재시도 성공을 검증했다. 범용 framework·운영 실패 옵션은 없다.
+계정 A/B 격리, 높은 현재 세대 보존, 단건 retire와 기존 생성/재생·고정 오류 비노출을 유지한다.
+기존 생성 테스트에는 명시 합성 open을 추가했다. 개수 진단 의미도 유지한다.
+
+### 이번 실행과 미구현 경계
+
+| 명령/검사 | 이번 결과 |
+|---|---|
+| `.venv\Scripts\python.exe -B -m unittest tests.test_nn_real_sync_candidate tests.test_nn_real_sync_dto -v` | **48 PASS, FAIL 0, SKIP 0** (서비스 24 + DTO 24) |
+| `.venv\Scripts\python.exe -B -m scripts.test_offline` | **160 PASS·22 SKIP, FAIL 0** (전체 182) |
+| `.venv\Scripts\python.exe -B -m pip check` | **PASS**, broken requirements 없음 |
+| `git diff --check`, 상대 문서 링크·UTF-8·새 연속 물음표/U+FFFD·허용 변경 범위 검사 | **PASS** |
+| `rg` 후보/service/store/open/close 참조 검색 | **PASS**: 전용 후보·테스트뿐; API/router/Core/설정 연결 없음 |
+
+offline runner의 상속 환경 정리, 환경 파일 접근 차단·dotenv mock·MySQL 차단·외부 socket
+차단을 실행 전에 확인했다. 기존 합성 임시 SQLite/mock 범위만 사용하며 러너/fixture를 바꾸지 않았다.
+출력의 거부 경로 `result=FAIL`은 고정 로그 검증이며 테스트 FAIL 집계가 아니다.
+
+이 실험은 제품 gate와 합성 payload 정리만 하나의 메모리 전이로 모델링한다.
+실제 Core/제품의 **A/F/D 단계가 원자적으로 합쳐진다는 뜻이 아니다**. 내부 open/close는
+실제 동의 접수·제품 drain·전체 삭제 완료의 증거가 아니다. 계정 전체 철회·Core ticket·
+현재 인증/동의/관리 권한·지원 정책 버전 검증·다중 worker 경합·내구 메시지·영속성·복원은 미구현이다.
+단일 instance 순차 호출·비재진입 시계만 지원한다. 메모리 live 참조 제거는 물리적 완전 삭제가
+아니며 호출자 입력·과거 ACK·외부 snapshot을 제거하지 않는다. 보유기간/백업 수명도 확정하지 않았다.
+실제 인증·동의·Core·API·DB·앱·migration·수집·배포는 연결하지 않았다.
+실제 자료 수집 **BLOCKED**, 앱 적용 **AUTHOR_REVIEW_REQUIRED** 유지.
+실제 DB·기기·앱 통합·원격 CI·migration·배포는 **NOT_RUN**.
+네트워크·설치·서버 실행·commit·push·PR·병합·Git 정리/전환을 수행하지 않았다.
