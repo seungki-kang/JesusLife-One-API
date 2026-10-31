@@ -173,7 +173,7 @@ consent_generation은 strict 정수지만 실제 계약의 숫자 하한이 명�
 정규화·지원 목록은 근거가 없어 추가하지 않았다. 공백 문자열/알 수 없는 버전의 형태 통과도
 정책 지원·승인을 뜻하지 않는다. 실제 Core 세대·정책 일치 검증은 미구현이다.
 
-**보류**: 최소 ACK 필드 목록·최초 revision=1은 문서에 있으나 received_at의 정확한
+**당시 보류(역사 기록; 현재 합성 후보는 [9절](#9-합성-ack-후보-구체화) 참조)**: 최소 ACK 필드 목록·최초 revision=1은 문서에 있으나 received_at의 정확한
 형식/정규화, 재생 시 applied/current revision 관계가 미확정이므로 ACK DTO는 보류했다.
 삭제 요청·관리 상태·부재 장벽 버전 DTO도 구현하지 않았다. DTO는 선택 자격·계정 확인·
 동의·소유권·멱등성·로컬 삭제/undo·철회 fence의 실제 동작을 보장하지 않는다.
@@ -198,3 +198,71 @@ SQLiteMobile의 TemporaryDirectory 합성 DB 경로를 확인했다. 러너가 �
 
 실제 수집 **BLOCKED**, 앱 적용 **AUTHOR_REVIEW_REQUIRED**를 유지한다. 패키지 설치·
 네트워크 연결·모델 탐색·commit·push·PR 생성·병합은 수행하지 않았다.
+
+## 9. 합성 ACK 후보 구체화
+
+2026-10-31, `feature/nn-real-sync-ack-dto`, 시작 HEAD `f095fee`, clean 확인.
+이번 허용은 기존 후보 DTO·전용 합성 테스트·이 문서 세 파일이다. **PROPOSED** 후보
+검증이며 운영 정책 전체 승인이나 API 연결 승인이 아니다. 8절의 신규 12 PASS와
+offline 124 PASS·22 SKIP은 이전 실행 기록이며 이번 결과와 구분한다.
+
+### 근거와 후보 선택
+
+P 5·6절과 이 문서 4.1절은 ACK 여섯 필드, 서버 최초 revision=1, 동일 operation의
+정규화 명령 비교, 삭제·철회 후 성공 재생 금지를 명시한다. P 13.4는 erased receipt와
+장벽을 원문 비교보다 먼저 판정한다. 이번 의미와 충돌은 발견하지 않았다.
+v1 `CompletionResult`는 metadata·updated_at을 포함하고 서비스가 현재 row revision을
+두 revision에 넣는 별도 계약이다. 이를 영속 operation receipt 근거로 쓰거나 변경하지 않는다.
+
+기존 문서가 침묵한 정확한 관계·시각 선택은 이번 합성 구현의 **PROPOSED** 선택이다.
+
+| 필드 | 후보 의미와 형태 |
+|---|---|
+| operation_id / sync_id | 명령/기록 UUID. 요청 DTO와 같은 문자열 또는 UUID 입력, 버전 제한 없이 canonical lowercase hyphenated JSON |
+| applied_revision | 해당 명령이 최초 반영된 기록 revision. strict 양의 정수, 동일 명령 재생에서 최초 값 보존 |
+| current_revision | 응답을 구성할 때 확인한 현재 기록 revision. strict 양의 정수, applied_revision 이상 |
+| replayed | 같은 operation의 동일 명령 재생 여부, strict bool |
+| received_at | 해당 명령의 최초 서버 접수 시각을 성공 receipt에 보존한 값. 재생 시 현재 시각으로 갱신하지 않음 |
+
+최초 생성은 applied_revision=current_revision=1, replayed=false다. 재생은 replayed=true,
+applied_revision 보존, current_revision>=applied_revision이다. DTO는 재생에 임의 양의
+applied_revision을 허용하여 관계만 검사한다. 실제 생성 receipt의 최초 값이 1이었는지,
+동일 명령인지, 과거 값을 보존했는지 대조하는 것은 서비스 의무다.
+
+received_at wire 후보는 UTC RFC3339 `YYYY-MM-DDTHH:MM:SS[.ffffff]Z` 문자열이다.
+소수부는 없거나 1~6자리, 실제 달력·시각 유효성을 검사하고 원 문자열과 정밀도를 보존한다.
+offset·시간대 없는 문자열·숫자·datetime 객체·공백·윤초를 거부한다. 기존 계약의 승인
+사실이 아닌 후보 선택이다. 완료 날짜나 클라이언트 시각에서 생성하지 않으며 DTO에는
+기본값이나 현재 시각 생성이 없다.
+
+### 구현 경계와 미결정
+
+[RealCompletionAck](../../app/modules/neorang_narang/real_sync_schemas.py)는 모든 필드
+필수·non-null·extra 금지·frozen·문자열 오류 입력값 숨김을 적용한다. metadata·owner·
+계정·토큰·원문은 응답 필드에 없다. 앱·설정 로더·DB import 없이 형태/관계만 검사하고
+기존 생성 요청 의미는 유지한다. ValidationError.errors() 등은 입력을 포함할 수 있고
+미지 필드 경로까지 안전하다고 주장하지 않는다. 전체 오류를 로그/응답에 직렬화하면 안 된다.
+HTTP 201/200·고정 422 처리에는 연결하지 않았다.
+
+실제 receipt 저장·최초 접수 시각 보존·current revision 조회·현재 generation/권한/장벽 검사,
+삭제·철회·erased 상태의 성공 ACK 재생 차단은 **미구현**이다. DTO가 이 상태를 판정하는
+것처럼 해석하지 않는다. 합성 시각 보존 테스트는 실제 receipt 재생 저장 증거가 아니다.
+
+**응답 공백 유지**: 다른 operation의 같은 sync_id·동일 활성 내용은 4.1절상 기존 생성
+결과 확인만 허용하지만 정확한 operation_id/applied_revision/received_at/replayed 응답
+shape는 미확정이다. 동일 operation replay와 혼동하거나 처리 방식을 임의 확정하지 않는다.
+삭제 요청·관리 상태·부재 장벽 버전·보유 정책도 이번에 확정하지 않는다.
+
+### 이번 검증
+
+- `.venv\Scripts\python.exe -B -m unittest tests.test_nn_real_sync_dto -v`: 최종 24 PASS,
+  FAIL 0, SKIP 0 (기존 요청 12 + 신규 ACK 12). 첫 실행 23 PASS·1 FAIL에서 파서의
+  24시 허용 경계를 확인하여 wire 정규식에 시·분·초 범위를 명시한 뒤 재실행했다.
+- `.venv\Scripts\python.exe -B -m scripts.test_offline`: 158개 중 136 PASS·22 SKIP,
+  FAIL 0. 기존 환경 정리·환경 파일 차단·dotenv mock·MySQL/외부 socket 차단 가드와
+  opt-in skip·임시 합성 SQLite 경로를 확인했다. 러너/관련 기존 fixture는 변경하지 않았다.
+  거부 경로 테스트의 고정 result=FAIL 로그는 테스트 실패 집계가 아니다.
+- `.venv\Scripts\python.exe -B -m pip check`: PASS, 깨진 의존성 없음.
+
+실제 수집 **BLOCKED**, 앱 적용 **AUTHOR_REVIEW_REQUIRED** 유지.
+실제 DB·기기·앱 통합·CI·migration·배포는 **NOT_RUN**이다.
