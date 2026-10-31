@@ -149,3 +149,52 @@ P 13.3의 기존 후보를 유지한다. OpenGeneration→제품 OPEN ACK→Core
 | `git status --short --branch`, `git log -1 --oneline`, `git diff --name-only`, `git ls-files --others --exclude-standard` | PASS: 브랜치 `docs/nn-sync-implementation-contract`, HEAD `d129e2e` 유지. tracked 변경 없음, 이 문서 한 파일만 untracked 추가 |
 
 실제 자료 수집 **BLOCKED**, 앱 적용 및 DB·인증·개인정보 경계 **AUTHOR_REVIEW_REQUIRED**. commit·push·PR 생성·병합·배포는 수행하지 않았다.
+
+## 8. 2026-10-31 합성 DTO 한정 구현 기록
+
+**승인 범위**: 사용자는 세 metadata 필드, 새 완료 직후 동일 흐름의 명시 선택,
+확인한 본인 계정 귀속·타 계정 자동 이전 금지, 로컬 삭제 시 서버 삭제 요청·undo 후
+자동 재전송 금지, 로그인과 별도 동의·철회 시 신규 전송 중단 및 서버 사본 삭제 요청이라는
+권고안을 **합성 서버 DTO·검증 테스트에 한정하여** 구현하도록 승인했다. 운영 보유기간은
+미정이다. 기존 PROPOSED 전체나 운영 정책을 APPROVED로 바꾸는 승인이 아니다.
+
+**구현**: [후보 DTO](../../app/modules/neorang_narang/real_sync_schemas.py)와
+[전용 합성 테스트](../../tests/test_nn_real_sync_dto.py)만 추가했다. 4.1절·P 3/5/6절을
+근거로 생성 envelope 다섯 필드와 metadata 세 필드는 모두 필수·non-null이며,
+base_revision은 생략 기본값 없이 명시적 strict 정수 0만 받는다. 두 계층 모두 extra를
+거부한다. 과정은 strict 정수 1/2, 날짜는 실제 유효한 ASCII YYYY-MM-DD 문자열을
+변환 없이 보존한다. UUID는 기존 schemas 관례처럼 문자열/UUID를 받아 canonical lowercase
+hyphenated JSON으로 정규화하며 버전 제한은 없다. 서버 revision·received_at·owner는
+생성 입력이 아니다.
+
+consent_generation은 strict 정수지만 실제 계약의 숫자 하한이 명시되지 않아 양수 제약을
+추가하지 않았다. 0/음수의 형태 통과도 유효 동의를 뜻하지 않는다. policy_version은
+정책 식별 값이라는 최소 의미에 따라 비어 있지 않은 strict 문자열만 검사한다. 정규식·공백
+정규화·지원 목록은 근거가 없어 추가하지 않았다. 공백 문자열/알 수 없는 버전의 형태 통과도
+정책 지원·승인을 뜻하지 않는다. 실제 Core 세대·정책 일치 검증은 미구현이다.
+
+**보류**: 최소 ACK 필드 목록·최초 revision=1은 문서에 있으나 received_at의 정확한
+형식/정규화, 재생 시 applied/current revision 관계가 미확정이므로 ACK DTO는 보류했다.
+삭제 요청·관리 상태·부재 장벽 버전 DTO도 구현하지 않았다. DTO는 선택 자격·계정 확인·
+동의·소유권·멱등성·로컬 삭제/undo·철회 fence의 실제 동작을 보장하지 않는다.
+
+**오류 경계**: 기존 router의 SafeValidationRoute는 고정 422 패턴이나 이번 DTO와 연결하지
+않았다. hide_input_in_errors는 문자열 오류의 입력값을 숨길 뿐 errors()의 입력이나
+미지 필드 경로까지 안전하게 만들지 않는다. ValidationError 전체/구조화 오류를 응답·로그에
+출력하면 안 된다. 공통 오류 helper/새 프로토콜은 추가하지 않았으며 실제 HTTP 고정 422
+연결·관측 경로 비노출 검증은 미구현/NOT_RUN이다.
+
+**검증**: `.venv\Scripts\python.exe -B -m unittest tests.test_nn_real_sync_dto -v`:
+12개 PASS, FAIL 0, SKIP 0. 신규 테스트는 DTO·Pydantic·표준 라이브러리만 import한다.
+`.venv\Scripts\python.exe -B -m scripts.test_offline`: 146개 중 124 PASS, 22 SKIP,
+FAIL 0 (신규 12개 포함). 사전에 러너의 환경 allowlist 정리·.env 계열 open 차단·dotenv
+mock·pymysql.connect 차단·외부 socket 차단을 읽고, 기존 opt-in MySQL/Core 테스트의 skip과
+SQLiteMobile의 TemporaryDirectory 합성 DB 경로를 확인했다. 러너가 모든 임의 SQLite 경로를
+차단하는 일반 sandbox라는 주장은 하지 않는다. 기존 fixture의 임시 합성 DB/mock 회귀이며
+실제 DB나 migration 실행이 아니다. `.venv\Scripts\python.exe -B -m pip check`: PASS.
+`git diff --check`, 신규 파일 별도 whitespace/최종 newline, 이 문서 상대 링크·변경 범위
+검사: PASS. 소스 참조 검색에서 새 DTO는 전용 테스트만 참조하며 router/app 시작 경로는
+변경하지 않았다. 실제 DB·기기·앱 통합·migration·배포는 NOT_RUN이다.
+
+실제 수집 **BLOCKED**, 앱 적용 **AUTHOR_REVIEW_REQUIRED**를 유지한다. 패키지 설치·
+네트워크 연결·모델 탐색·commit·push·PR 생성·병합은 수행하지 않았다.
