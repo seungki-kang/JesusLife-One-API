@@ -244,6 +244,7 @@ offset·시간대 없는 문자열·숫자·datetime 객체·공백·윤초를 �
 미지 필드 경로까지 안전하다고 주장하지 않는다. 전체 오류를 로그/응답에 직렬화하면 안 된다.
 HTTP 201/200·고정 422 처리에는 연결하지 않았다.
 
+당시 미구현(역사 기록; 현재 합성 후보는 아래 생성·ACK 기록과 [10절](#10-합성-메모리-retire-구현-기록) 참조):
 실제 receipt 저장·최초 접수 시각 보존·current revision 조회·현재 generation/권한/장벽 검사,
 삭제·철회·erased 상태의 성공 ACK 재생 차단은 **미구현**이다. DTO가 이 상태를 판정하는
 것처럼 해석하지 않는다. 합성 시각 보존 테스트는 실제 receipt 재생 저장 증거가 아니다.
@@ -306,7 +307,55 @@ shape는 미확정이다. 동일 operation replay와 혼동하거나 처리 방�
 이전 사용자 보고 DTO 24 PASS·offline 136 PASS/22 SKIP와 이번 실행 결과를 혼합하지 않는다.
 참조 검색에서 후보 import는 전용 테스트뿐이고 router/app 등록·전역 store/service 생성·설정 접근은 없다.
 
+당시 미구현(역사 기록; 현재 합성 retire는 [10절](#10-합성-메모리-retire-구현-기록) 참조):
 삭제·철회·erased receipt·generation fence·현재 권한 재검사·보유기간·재시작 복구·영속성은
 미구현이다. 이름의 Real은 운영 준비를 뜻하지 않는다. 이 후보는 실제 수집에 **사용 불가 / BLOCKED**,
 앱 적용은 **AUTHOR_REVIEW_REQUIRED**다. HTTP·실제 동의·삭제 안전성·DB·기기·앱 통합·migration·배포는
 이번 증거 범위 밖이며 **NOT_RUN**이다.
+
+## 10. 합성 메모리 retire 구현 기록
+
+2026-10-31. 시작 브랜치 `feature/nn-real-sync-retirement`, HEAD `e834b43`, clean.
+이전 서비스·DTO 36 PASS 및 offline 148 PASS·22 SKIP은 이전 실행 기록이다.
+이번 허용 범위는 미연결 후보의 내부 합성 메모리 전이뿐이다. P 13.4.1~13.4.2의
+payload 최소화·원문 비교 전 거부를 근거로 하며 공개 삭제 DTO/HTTP 계약을 확정하지 않는다.
+
+- `retire(context, sync_id)`는 정확한 `SyntheticAccountContext`와 UUID 타입을 명시적으로
+  받는다. 문자열 sync ID를 자동 변환하지 않으며 잘못된 타입은 `invalid_candidate_input`이다.
+  context는 실제 인증/관리 권한/동의 결과가 아니고 기본 승인 기능도 없다. 반환은 `None`이며
+  삭제 operation/base/revision·부재 장벽 revision·관리 응답은 **미확정**이다.
+- 상태는 record dict, receipt dict, owner+sync ID의 frozenset 장벽이다. 존재/부재 ID 모두
+  장벽을 남기고 해당 record를 제거한다. 해당 owner/sync ID의 모든 활성 생성 receipt를
+  내용 없는 `_ErasedReceipt`로 교체한다. owner+operation 키와 erased 상태만 남으며
+  sync ID 연결값·command JSON·metadata·revision·received_at·과거 성공 ACK·원문 hash는 없다.
+  장벽 자체의 owner+sync ID와 erased owner+operation은 잔존 연결정보다.
+- 생성 입력은 기존 방식대로 먼저 재검증한다. 이후 **erased owner+operation → owner+sync ID
+  장벽 → 활성 receipt의 정규화 명령 비교/재생 → 신규 생성** 순서다. 앞 두 조건은 내용 비교나
+  시계 호출 없이 고정 내부 `operation_retired`로 거부한다. 유효한 sync ID/metadata/generation/
+  policy 변경도 erased operation을 재사용할 수 없다. HTTP 410 또는 다른 응답에 연결하지 않았다.
+- record/receipt 복사본과 새 불변 장벽을 준비한 뒤 단일 상태 참조를 교체한다. 준비 중 예외는
+  `candidate_preparation_failed`로 숨기며 이전 상태가 유지된다. 실패 주입은 테스트에서 기존
+  `_ErasedReceipt` 생성자를 patch하는 것뿐이며 공개 운영 옵션/범용 transaction은 없다.
+  반복 retire는 전체 상태 값이 동일하며 다른 owner와 무관한 기록/receipt는 보존된다.
+- 공개 진단 `counts(context)`는 `(활성 record 수, 활성+erased receipt 수)`다. 장벽 수는 포함하지
+  않는다. retire는 receipt 개수를 줄이지 않는다. 반환은 정수 tuple/독립 ACK/None뿐이며
+  저장 dict/receipt 참조를 반환하지 않는다. private reflection은 보안 sandbox 밖이다.
+
+### 이번 실행과 한계
+
+- `.venv\Scripts\python.exe -B -m unittest tests.test_nn_real_sync_candidate tests.test_nn_real_sync_dto -v`:
+  **42 PASS, FAIL 0, SKIP 0** (서비스 18 + DTO 24). 새 6개 테스트는 변경 명령·부재 장벽·
+  반복 전이·모든 receipt 최소화·계정 격리·준비 실패/잘못된 입력의 전체 상태 비교·canary 비노출을 검증한다.
+- `.venv\Scripts\python.exe -B -m scripts.test_offline`: **154 PASS·22 SKIP, FAIL 0** (전체 176).
+  실행 전에 상속 환경 정리·환경 파일 open 차단·dotenv mock·MySQL 차단·외부 socket 차단과
+  합성 임시 SQLite 범위를 확인했다. 러너 및 관련 기존 fixture는 변경하지 않았다.
+- `.venv\Scripts\python.exe -B -m pip check`, `git diff --check`, 상대 문서 링크·UTF-8·
+  새 손상 문자열·허용 세 파일 범위 검사: **PASS**. 후보 참조는 전용 테스트와 후보 내부 DTO import뿐이며
+  router/app 등록·전역 후보 instance·Core/설정 연결은 없다.
+
+메모리의 live 참조 제거만 검증했으며 물리적 완전 삭제가 아니다. 과거 반환 ACK·호출자 입력·
+외부 snapshot은 제거하지 못한다. 단일 인스턴스·순차 호출·비재진입 시계 한계는 그대로다.
+현재 권한/동의 검사·generation 철회·Core fence·보유기간·영속성·동시성·프로세스 종료·backup 복구·
+실제 삭제 API·HTTP/운영 로그 경로는 범위 밖이다. 이번 테스트는 실제 동의·철회·삭제 안전성의 증거가 아니다.
+실제 자료 수집 **BLOCKED**, 앱 적용 **AUTHOR_REVIEW_REQUIRED** 유지.
+실제 DB·기기·앱 통합·CI·migration·배포는 **NOT_RUN**. 네트워크·설치·서버 실행·commit·push·PR·병합은 하지 않았다.

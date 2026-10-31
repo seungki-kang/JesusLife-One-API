@@ -9,7 +9,7 @@ from uuid import UUID
 from app.modules.neorang_narang.real_sync_candidate import (
     CandidatePreparationFailed, IdempotencyKeyReused, InvalidCandidateInput,
     RealSyncCandidateService, SyntheticAccountContext, SyntheticMemoryStore,
-    UnsupportedCandidatePath,
+    UnsupportedCandidatePath, OperationRetired,
 )
 from app.modules.neorang_narang.real_sync_schemas import RealCompletionCreate
 from tests.test_nn_real_sync_dto import candidate
@@ -177,7 +177,7 @@ class RealSyncCandidateTests(unittest.TestCase):
     def test_current_revision_is_read_from_record_not_receipt(self):
         self.service.create(self.a, self.command)
         # No update API is implemented. White-box simulate a later record state.
-        records, _ = self.store._SyntheticMemoryStore__state
+        records, _, _ = self.store._SyntheticMemoryStore__state
         key = (self.a.owner, self.command.metadata.sync_id)
         records[key] = replace(records[key], revision=4)
         ack = self.service.create(self.a, self.command)
@@ -202,6 +202,122 @@ class RealSyncCandidateTests(unittest.TestCase):
             with self.assertRaises(IdempotencyKeyReused) as caught:
                 self.service.create(self.a, changed)
             self.assertEqual(str(caught.exception), "idempotency_key_reused")
+
+    def test_retired_operation_rejects_original_and_valid_changes_before_comparison(self):
+        self.service.create(self.a, self.command)
+        self.assertIsNone(self.service.retire(self.a, self.command.metadata.sync_id))
+        before = self.state()
+        changes = ({}, {"consent_generation": 4}, {"policy_version": CANARY},
+                   {"metadata": {**candidate()["metadata"], "sync_id": str(UUID(int=80))}},
+                   {"metadata": {**candidate()["metadata"], "course_number": 2}},
+                   {"metadata": {**candidate()["metadata"], "completed_on": "2024-03-01"}})
+        with self.assertNoLogs(level="DEBUG"):
+            for change in changes:
+                command = RealCompletionCreate.model_validate({**candidate(), **change})
+                with self.assertRaisesRegex(OperationRetired, "^operation_retired$") as caught:
+                    self.service.create(self.a, command)
+                self.assertNotIn(CANARY, repr(caught.exception))
+                self.assertEqual(before, self.state())
+        self.clock.assert_called_once_with()
+
+    def test_barrier_blocks_new_operation_and_absent_id_late_create(self):
+        for present in (False, True):
+            with self.subTest(present=present):
+                self.setUp()
+                if present:
+                    self.service.create(self.a, self.command)
+                self.service.retire(self.a, self.command.metadata.sync_id)
+                before = self.state()
+                data = candidate()
+                data["operation_id"] = UUID(int=81)
+                with self.assertRaisesRegex(OperationRetired, "^operation_retired$"):
+                    self.service.create(self.a, RealCompletionCreate.model_validate(data))
+                self.assertEqual(before, self.state())
+                self.assertEqual(self.clock.call_count, int(present))
+
+    def test_retire_minimizes_all_receipts_and_repeat_preserves_whole_state(self):
+        first = self.service.create(self.a, self.command)
+        records, receipts, _ = self.store._SyntheticMemoryStore__state
+        # Create only supports one receipt per record. Simulate another historical
+        # create receipt to prove minimization scans all matching operations.
+        key = (self.a.owner, self.command.operation_id)
+        receipts[(self.a.owner, UUID(int=82))] = replace(receipts[key])
+        command_json = records[(self.a.owner, self.command.metadata.sync_id)].command_json
+        self.service.retire(self.a, self.command.metadata.sync_id)
+        records, receipts, barriers = self.state()
+        self.assertEqual(records, {})
+        self.assertEqual(barriers, {(self.a.owner, self.command.metadata.sync_id)})
+        self.assertEqual(set(receipts), {key, (self.a.owner, UUID(int=82))})
+        for receipt in receipts.values():
+            self.assertEqual(type(receipt).__name__, "_ErasedReceipt")
+            self.assertEqual(vars(receipt), {})
+        self.assertNotIn(command_json, repr(self.state()))
+        self.assertNotIn(STAMP, repr(self.state()))
+        self.assertEqual(self.store.counts(self.a), (0, 2))
+        before = self.state()
+        for _ in range(3):
+            self.service.retire(self.a, self.command.metadata.sync_id)
+            self.assertEqual(before, self.state())
+        # Previously returned ACK/input remain caller-owned; no physical erasure.
+        self.assertEqual(first.received_at, STAMP)
+        self.assertEqual(self.command.metadata.completed_on, candidate()["metadata"]["completed_on"])
+
+    def test_retire_isolates_accounts_and_unrelated_records(self):
+        self.service.create(self.a, self.command)
+        self.service.create(self.b, self.command)
+        data = candidate()
+        data["operation_id"] = UUID(int=83)
+        data["metadata"]["sync_id"] = UUID(int=84)
+        unrelated = RealCompletionCreate.model_validate(data)
+        self.service.create(self.a, unrelated)
+        before = self.state()
+        self.service.retire(self.a, self.command.metadata.sync_id)
+        after = self.state()
+        for index in (0, 1):
+            for key, value in before[index].items():
+                if key[0] == self.b.owner or key[1] in (UUID(int=83), UUID(int=84)):
+                    self.assertEqual(after[index][key], value)
+        self.assertTrue(self.service.create(self.b, self.command).replayed)
+        self.assertTrue(self.service.create(self.a, unrelated).replayed)
+        absent = UUID(int=85)
+        self.service.retire(self.a, absent)
+        data["operation_id"] = UUID(int=86)
+        data["metadata"]["sync_id"] = absent
+        self.assertFalse(self.service.create(self.b, RealCompletionCreate.model_validate(data)).replayed)
+        self.assertEqual(self.store.counts(self.b), (2, 2))
+
+    def test_retire_preparation_failure_preserves_whole_state_then_recovers(self):
+        self.service.create(self.a, self.command)
+        self.service.create(self.b, self.command)
+        before = self.state()
+        with self.assertNoLogs(level="DEBUG"):
+            with patch("app.modules.neorang_narang.real_sync_candidate._ErasedReceipt",
+                       side_effect=ValueError(CANARY)):
+                with self.assertRaisesRegex(CandidatePreparationFailed,
+                                            "^candidate_preparation_failed$") as caught:
+                    self.service.retire(self.a, self.command.metadata.sync_id)
+                self.assertNotIn(CANARY, repr(caught.exception))
+        self.assertEqual(before, self.state())
+        self.service.retire(self.a, self.command.metadata.sync_id)
+        with self.assertRaises(OperationRetired):
+            self.service.create(self.a, self.command)
+
+    def test_retire_invalid_identifiers_preserve_whole_state(self):
+        self.service.create(self.a, self.command)
+        before = self.state()
+        with self.assertNoLogs(level="DEBUG"):
+            for context, sync_id in (
+                (None, self.command.metadata.sync_id),
+                ({"owner": CANARY}, self.command.metadata.sync_id),
+                (SyntheticAccountContext(CANARY), self.command.metadata.sync_id),
+                (self.a, str(self.command.metadata.sync_id)),
+                (self.a, CANARY), (self.a, None), (self.a, 1), (self.a, True),
+            ):
+                with self.assertRaisesRegex(InvalidCandidateInput,
+                                            "^invalid_candidate_input$") as caught:
+                    self.service.retire(context, sync_id)
+                self.assertNotIn(CANARY, repr(caught.exception))
+                self.assertEqual(before, self.state())
 
 
 if __name__ == "__main__":
