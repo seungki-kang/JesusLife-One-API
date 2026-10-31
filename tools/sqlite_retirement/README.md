@@ -110,7 +110,34 @@ the earlier runtime/results above describe the pre-existing exception experiment
 This is SQLite recovery after process termination. It does not verify power
 failure, OS crash, Android, MySQL, actual application transactions, server sync,
 physical erasure, concurrent workers, or real device/DB behavior. ACK and SQLite
-experiments remain disconnected from CI. Product-wide tests, pip check, model
-exploration, real devices, real DBs and CI execution are **NOT_RUN** for this task.
+experiments now have dedicated CI configuration as described below; remote CI
+execution remains **NOT_RUN**. Product-wide tests, pip check, model exploration,
+real devices and real DBs are **NOT_RUN** for this task.
 Real collection remains **BLOCKED**; applying protection boundaries or this
 experimental schema to the application remains **AUTHOR_REVIEW_REQUIRED**.
+
+## Dedicated CI
+
+`.github/workflows/nn-sync-experiments.yml` supports PRs targeting main, pushes
+to main, and manual dispatch. PR/push path filters include both experiment
+directories and the workflow itself. Existing offline-tests and sync-model
+workflows are unchanged.
+
+The job uses Windows Server 2022 and Python 3.14.8, matching the Python version
+in existing CI, with a 10-minute timeout and only `contents: read`. Separate
+PowerShell steps log Python/SQLite versions, run ACK discovery, and run the full
+SQLite discovery command shown above. Each step explicitly returns Python's
+exit code. No pip installation, application/configuration imports, secrets,
+service containers, or real databases are needed. The existing spawn, bounded
+checkpoint wait, owned-child kill/join and cleanup behavior is unchanged;
+failures are not skipped or allowed to pass.
+
+Local revalidation on 2026-10-31: Windows CPython **3.14.8**, SQLite **3.50.4**;
+full SQLite discovery passed **13 tests** (8 transaction tests, 3 real owned-child
+kills and 2 mock diagnostics). All three killed children reported exitcode=-15.
+These are local results, not CI PASS. Workflow configuration is written;
+GitHub execution is **NOT_RUN**, and its linked SQLite version must be checked
+from that run's version log.
+
+For this CI-wiring task, local `python -B -m pip check` also passed using the
+existing project virtual environment; no packages were installed.
