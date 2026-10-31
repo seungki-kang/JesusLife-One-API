@@ -9,7 +9,7 @@ from uuid import UUID
 from app.modules.neorang_narang.real_sync_candidate import (
     CandidatePreparationFailed, IdempotencyKeyReused, InvalidCandidateInput,
     RealSyncCandidateService, SyntheticAccountContext, SyntheticMemoryStore,
-    UnsupportedCandidatePath, OperationRetired,
+    UnsupportedCandidatePath, OperationRetired, GenerationNotOpen,
 )
 from app.modules.neorang_narang.real_sync_schemas import RealCompletionCreate
 from tests.test_nn_real_sync_dto import candidate
@@ -27,10 +27,180 @@ class RealSyncCandidateTests(unittest.TestCase):
         self.clock = Mock(return_value=STAMP)
         self.service = RealSyncCandidateService(self.store, self.clock)
         self.command = RealCompletionCreate.model_validate(candidate())
+        self.service.open_generation(self.a, 3)
+        self.service.open_generation(self.b, 3)
 
     def state(self):
         # White-box copies for failure invariants only; no public mutable views.
         return deepcopy(self.store._SyntheticMemoryStore__state)
+
+    def command_for(self, generation=3, operation=100, sync=101):
+        data = candidate()
+        data.update(consent_generation=generation, operation_id=UUID(int=operation))
+        data["metadata"]["sync_id"] = UUID(int=sync)
+        return RealCompletionCreate.model_validate(data)
+
+    def test_initial_closed_and_unopened_future_reject_without_mutation(self):
+        store = SyntheticMemoryStore()
+        service = RealSyncCandidateService(store, self.clock)
+        before = deepcopy(store._SyntheticMemoryStore__state)
+        with self.assertRaisesRegex(GenerationNotOpen, "^generation_not_open$"):
+            service.create(self.a, self.command)
+        self.assertEqual(before, store._SyntheticMemoryStore__state)
+        service.open_generation(self.a, 3)
+        before = deepcopy(store._SyntheticMemoryStore__state)
+        for generation in (1, 2, 4):
+            with self.assertRaises(GenerationNotOpen):
+                service.create(self.a, self.command_for(generation))
+            self.assertEqual(before, store._SyntheticMemoryStore__state)
+        self.clock.assert_not_called()
+        self.assertFalse(service.create(self.a, self.command).replayed)
+        self.assertTrue(service.create(self.a, self.command).replayed)
+
+    def test_close_blocks_ack_comparison_absent_requests_and_new_generation_reuse(self):
+        ack = self.service.create(self.a, self.command)
+        self.service.close_generation(self.a, 3)
+        before = self.state()
+        for command in (self.command,
+                        self.command.model_copy(update={"policy_version": CANARY}),
+                        self.command_for(3), self.command_for(2)):
+            with self.assertRaisesRegex(OperationRetired, "^operation_retired$"):
+                self.service.create(self.a, command)
+            self.assertEqual(before, self.state())
+        self.assertEqual(ack.received_at, STAMP)  # caller ACK cannot reopen gate
+        self.service.open_generation(self.a, 4)
+        before = self.state()
+        changed = self.command.model_copy(update={"consent_generation": 4})
+        # Erased operation wins even with a new sync ID or unopened generation.
+        for generation in (4, 5):
+            data = candidate()
+            data["consent_generation"] = generation
+            data["metadata"]["sync_id"] = UUID(int=102)
+            with self.assertRaises(OperationRetired):
+                self.service.create(self.a, RealCompletionCreate.model_validate(data))
+        for command in (changed, self.command_for(4, 103, self.command.metadata.sync_id.int)):
+            with self.assertRaises(OperationRetired):
+                self.service.create(self.a, command)
+        self.assertEqual(before, self.state())
+        self.assertFalse(self.service.create(self.a, self.command_for(4)).replayed)
+        with self.assertRaises(OperationRetired):
+            self.service.create(self.a, self.command_for(3, 104, 105))
+        self.assertEqual(self.clock.call_count, 2)
+
+    def test_open_close_ordering_monotonicity_and_no_automatic_replacement(self):
+        absent = SyntheticAccountContext(UUID(int=12))
+        self.service.close_generation(absent, 8)
+        for generation in (1, 8):
+            before = self.state()
+            with self.assertRaises(OperationRetired):
+                self.service.create(absent, self.command_for(generation))
+            with self.assertRaises(OperationRetired):
+                self.service.open_generation(absent, generation)
+            self.assertEqual(before, self.state())
+        before = self.state()
+        self.service.open_generation(self.a, 3)
+        self.assertEqual(before, self.state())
+        for generation in (1, 2, 4, 9):
+            with self.assertRaisesRegex(UnsupportedCandidatePath, "^unsupported_candidate_path$"):
+                self.service.open_generation(self.a, generation)
+            self.assertEqual(before, self.state())
+        self.service.close_generation(self.a, 2)
+        self.assertEqual(self.state()[3][self.a.owner], 3)
+        for generation in (2, 1, 2):
+            before = self.state()
+            self.service.close_generation(self.a, generation)
+            self.assertEqual(before, self.state())
+            with self.assertRaises(OperationRetired):
+                self.service.open_generation(self.a, generation)
+        self.service.close_generation(self.a, 5)
+        self.assertNotIn(self.a.owner, self.state()[3])
+        self.assertEqual(self.state()[4][self.a.owner], 5)
+        for generation in (3, 4, 5):
+            with self.assertRaises(OperationRetired):
+                self.service.open_generation(self.a, generation)
+        self.service.open_generation(self.a, 6)
+        before = self.state()
+        self.service.close_generation(self.a, 4)
+        self.assertEqual(before, self.state())
+
+    def test_close_minimizes_all_old_payloads_and_preserves_high_generation_and_accounts(self):
+        self.service.create(self.a, self.command)
+        self.service.create(self.b, self.command)
+        self.service.retire(self.a, UUID(int=110))
+        records, receipts, _, _, _ = self.store._SyntheticMemoryStore__state
+        original = (self.a.owner, self.command.operation_id)
+        receipts[(self.a.owner, UUID(int=111))] = replace(receipts[original])
+        before_b = {key: value for key, value in receipts.items() if key[0] == self.b.owner}
+        self.service.close_generation(self.a, 2)
+        self.assertTrue(self.service.create(self.a, self.command).replayed)
+        self.service.close_generation(self.a, 3)
+        records, receipts, barriers, opened, retired = self.state()
+        self.assertFalse(any(key[0] == self.a.owner for key in records))
+        for key, receipt in receipts.items():
+            if key[0] == self.a.owner:
+                self.assertEqual(type(receipt).__name__, "_ErasedReceipt")
+                self.assertEqual(vars(receipt), {})
+            else:
+                self.assertEqual(receipt, before_b[key])
+        self.assertIn((self.a.owner, UUID(int=110)), barriers)
+        self.assertIn((self.a.owner, self.command.metadata.sync_id), barriers)
+        self.assertEqual(opened, {self.b.owner: 3})
+        self.assertEqual(retired, {self.a.owner: 3})
+        self.service.open_generation(self.a, 5)
+        high = self.command_for(5)
+        self.service.create(self.a, high)
+        before = self.state()
+        self.service.close_generation(self.a, 4)
+        after = self.state()
+        self.assertEqual(before[:4], after[:4])
+        self.assertTrue(self.service.create(self.a, high).replayed)
+        self.assertTrue(self.service.create(self.b, self.command).replayed)
+        # Single-record barrier persists across close/open too.
+        with self.assertRaises(OperationRetired):
+            self.service.create(self.a, self.command_for(5, 112, 110))
+
+    def test_close_preparation_failure_preserves_single_state_reference_then_retries(self):
+        self.service.create(self.a, self.command)
+        self.service.create(self.a, self.command_for())
+        self.service.create(self.b, self.command)
+        before = self.state()
+        reference = self.store._SyntheticMemoryStore__state
+        with self.assertNoLogs(level="DEBUG"):
+            with patch("app.modules.neorang_narang.real_sync_candidate._ErasedReceipt",
+                       side_effect=[object(), ValueError(CANARY)]):
+                with self.assertRaisesRegex(CandidatePreparationFailed,
+                                            "^candidate_preparation_failed$") as caught:
+                    self.service.close_generation(self.a, 3)
+                self.assertNotIn(CANARY, repr(caught.exception))
+        self.assertIs(reference, self.store._SyntheticMemoryStore__state)
+        self.assertEqual(before, self.state())
+        self.assertTrue(self.service.create(self.a, self.command).replayed)
+        self.service.close_generation(self.a, 3)
+        records, receipts, _, _, _ = self.state()
+        self.assertNotIn((self.a.owner, self.command.metadata.sync_id), records)
+        self.assertEqual(vars(receipts[(self.a.owner, self.command.operation_id)]), {})
+        # A-only state has no payload, command, timestamp, generation receipt link.
+        self.service.close_generation(self.b, 3)
+        self.assertNotIn(STAMP, repr(self.state()))
+        self.assertNotIn(self.command.model_dump_json(), repr(self.state()))
+
+    def test_strict_internal_generation_and_context_validation(self):
+        before = self.state()
+        with self.assertNoLogs(level="DEBUG"):
+            for value in (True, False, "3", CANARY, 3.0, 0, -1, None):
+                for action in (self.service.open_generation, self.service.close_generation):
+                    with self.assertRaisesRegex(InvalidCandidateInput, "^invalid_candidate_input$"):
+                        action(self.a, value)
+                with self.assertRaises(InvalidCandidateInput):
+                    self.service.create(self.a, self.command.model_copy(
+                        update={"consent_generation": value}))
+                self.assertEqual(before, self.state())
+            for context in (None, {"owner": CANARY}, SyntheticAccountContext(CANARY)):
+                for action in (self.service.open_generation, self.service.close_generation):
+                    with self.assertRaises(InvalidCandidateInput):
+                        action(context, 3)
+                    self.assertEqual(before, self.state())
+        self.clock.assert_not_called()
 
     def test_initial_minimal_ack(self):
         ack = self.service.create(self.a, self.command)
@@ -70,7 +240,7 @@ class RealSyncCandidateTests(unittest.TestCase):
     def test_each_valid_command_field_change_conflicts(self):
         self.service.create(self.a, self.command)
         before = self.state()
-        changes = (("consent_generation", 4), ("policy_version", CANARY),
+        changes = (("policy_version", CANARY),
                    ("sync_id", UUID(int=30)), ("course_number", 2),
                    ("completed_on", "2024-03-01"))
         for field, value in changes:
@@ -177,7 +347,7 @@ class RealSyncCandidateTests(unittest.TestCase):
     def test_current_revision_is_read_from_record_not_receipt(self):
         self.service.create(self.a, self.command)
         # No update API is implemented. White-box simulate a later record state.
-        records, _, _ = self.store._SyntheticMemoryStore__state
+        records, _, _, _, _ = self.store._SyntheticMemoryStore__state
         key = (self.a.owner, self.command.metadata.sync_id)
         records[key] = replace(records[key], revision=4)
         ack = self.service.create(self.a, self.command)
@@ -237,14 +407,14 @@ class RealSyncCandidateTests(unittest.TestCase):
 
     def test_retire_minimizes_all_receipts_and_repeat_preserves_whole_state(self):
         first = self.service.create(self.a, self.command)
-        records, receipts, _ = self.store._SyntheticMemoryStore__state
+        records, receipts, _, _, _ = self.store._SyntheticMemoryStore__state
         # Create only supports one receipt per record. Simulate another historical
         # create receipt to prove minimization scans all matching operations.
         key = (self.a.owner, self.command.operation_id)
         receipts[(self.a.owner, UUID(int=82))] = replace(receipts[key])
         command_json = records[(self.a.owner, self.command.metadata.sync_id)].command_json
         self.service.retire(self.a, self.command.metadata.sync_id)
-        records, receipts, barriers = self.state()
+        records, receipts, barriers, _, _ = self.state()
         self.assertEqual(records, {})
         self.assertEqual(barriers, {(self.a.owner, self.command.metadata.sync_id)})
         self.assertEqual(set(receipts), {key, (self.a.owner, UUID(int=82))})

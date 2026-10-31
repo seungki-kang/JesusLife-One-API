@@ -1,6 +1,6 @@
 """Unconnected synthetic candidate. NEVER use for real collection.
 
-No authentication, consent/policy approval, withdrawal/generation fences,
+No authentication, consent/policy approval or distributed withdrawal fences,
 retention, persistence or restart recovery. One instance, sequential calls
 only (including a non-reentrant injected clock); no concurrency guarantee.
 Python private state is an encapsulation boundary, not a sandbox against
@@ -41,6 +41,11 @@ class CandidatePreparationFailed(ValueError):
         super().__init__("candidate_preparation_failed")
 
 
+class GenerationNotOpen(ValueError):
+    def __init__(self):
+        super().__init__("generation_not_open")
+
+
 @dataclass(frozen=True, repr=False)
 class SyntheticAccountContext:
     """Explicit test identity boundary; NOT an authentication result."""
@@ -52,6 +57,7 @@ class SyntheticAccountContext:
 class _Record:
     command_json: str
     revision: int
+    generation: int
 
 
 @dataclass(frozen=True, repr=False)
@@ -60,6 +66,7 @@ class _Receipt:
     sync_id: UUID
     applied_revision: int
     received_at: str
+    generation: int
 
 
 @dataclass(frozen=True, repr=False)
@@ -76,18 +83,21 @@ class SyntheticMemoryStore:
     """
 
     def __init__(self):
-        self.__state: tuple[dict, dict, frozenset] = ({}, {}, frozenset())
+        # records, receipts, permanent sync barriers, open g, retired-through.
+        self.__state: tuple[dict, dict, frozenset, dict, dict] = (
+            {}, {}, frozenset(), {}, {},
+        )
 
     def counts(self, context: SyntheticAccountContext) -> tuple[int, int]:
         owner = _owner(context)
         # Receipt count includes erased markers; barriers are not counted.
-        records, receipts, _ = self.__state
+        records, receipts, _, _, _ = self.__state
         return (sum(key[0] == owner for key in records),
                 sum(key[0] == owner for key in receipts))
 
     def _apply(self, owner: UUID, command: RealCompletionCreate,
                clock: Callable[[], str]) -> RealCompletionAck:
-        records, receipts, barriers = self.__state
+        records, receipts, barriers, opened, retired = self.__state
         operation_key = (owner, command.operation_id)
         record_key = (owner, command.metadata.sync_id)
         receipt = receipts.get(operation_key)
@@ -95,6 +105,11 @@ class SyntheticMemoryStore:
             raise OperationRetired()
         if record_key in barriers:
             raise OperationRetired()
+        generation = command.consent_generation
+        if generation <= retired.get(owner, 0):
+            raise OperationRetired()
+        if opened.get(owner) != generation:
+            raise GenerationNotOpen()
         snapshot = command.model_dump_json()
         if receipt is not None:
             if snapshot != receipt.command_json:
@@ -117,15 +132,15 @@ class SyntheticMemoryStore:
         )
         next_records = records.copy()
         next_receipts = receipts.copy()
-        next_records[record_key] = _Record(snapshot, 1)
+        next_records[record_key] = _Record(snapshot, 1, generation)
         next_receipts[operation_key] = _Receipt(
-            snapshot, command.metadata.sync_id, 1, ack.received_at,
+            snapshot, command.metadata.sync_id, 1, ack.received_at, generation,
         )
-        self.__state = (next_records, next_receipts, barriers)
+        self.__state = (next_records, next_receipts, barriers, opened, retired)
         return ack
 
     def _retire(self, owner: UUID, sync_id: UUID) -> None:
-        records, receipts, barriers = self.__state
+        records, receipts, barriers, opened, retired = self.__state
         record_key = (owner, sync_id)
         next_records = records.copy()
         next_receipts = receipts.copy()
@@ -136,13 +151,57 @@ class SyntheticMemoryStore:
                     and receipt.sync_id == sync_id):
                 next_receipts[key] = _ErasedReceipt()
         # No fallible preparation after publication; no revision/HTTP meaning.
-        self.__state = (next_records, next_receipts, next_barriers)
+        self.__state = (next_records, next_receipts, next_barriers, opened, retired)
+
+    def _open(self, owner: UUID, generation: int) -> None:
+        records, receipts, barriers, opened, retired = self.__state
+        if generation <= retired.get(owner, 0):
+            raise OperationRetired()
+        current = opened.get(owner)
+        if current == generation:
+            return
+        if current is not None:
+            raise UnsupportedCandidatePath()
+        next_opened = opened.copy()
+        next_opened[owner] = generation
+        self.__state = (records, receipts, barriers, next_opened, retired)
+
+    def _close(self, owner: UUID, generation: int) -> None:
+        records, receipts, barriers, opened, retired = self.__state
+        boundary = max(generation, retired.get(owner, 0))
+        next_records = records.copy()
+        next_receipts = receipts.copy()
+        next_barriers = barriers
+        next_opened = opened.copy()
+        next_retired = retired.copy()
+        next_retired[owner] = boundary
+        if opened.get(owner, boundary + 1) <= boundary:
+            next_opened.pop(owner, None)
+        for key, record in records.items():
+            if key[0] == owner and record.generation <= boundary:
+                del next_records[key]
+                next_barriers = next_barriers | {key}
+        for key, receipt in receipts.items():
+            if (key[0] == owner and isinstance(receipt, _Receipt)
+                    and receipt.generation <= boundary):
+                next_barriers = next_barriers | {(owner, receipt.sync_id)}
+                next_receipts[key] = _ErasedReceipt()
+        # Boundary, cleanup and barriers publish together; no clock or ACK.
+        self.__state = (next_records, next_receipts, next_barriers,
+                        next_opened, next_retired)
 
 
 def _owner(context: SyntheticAccountContext) -> UUID:
     if type(context) is not SyntheticAccountContext or type(context.owner) is not UUID:
         raise InvalidCandidateInput()
     return context.owner
+
+
+def _generation(value: int) -> int:
+    # Internal PROPOSED ordering only; does not grant consent/policy authority.
+    if type(value) is not int or value <= 0:
+        raise InvalidCandidateInput()
+    return value
 
 
 class RealSyncCandidateService:
@@ -171,14 +230,36 @@ class RealSyncCandidateService:
             if command.model_extra or command.metadata.model_extra:
                 raise InvalidCandidateInput()
             validated = RealCompletionCreate.model_validate(raw)
+            _generation(validated.consent_generation)
         except Exception:
             raise InvalidCandidateInput() from None
         try:
             return self.__store._apply(owner, validated, self.__clock)
-        except (IdempotencyKeyReused, UnsupportedCandidatePath, OperationRetired):
+        except (IdempotencyKeyReused, UnsupportedCandidatePath, OperationRetired,
+                GenerationNotOpen):
             raise
         except Exception:
             # Clock/ACK errors may contain inputs; do not expose their messages.
+            raise CandidatePreparationFailed() from None
+
+    def open_generation(self, context: SyntheticAccountContext, generation: int) -> None:
+        """Explicit synthetic gate only; NOT consent or policy approval."""
+        owner = _owner(context)
+        generation = _generation(generation)
+        try:
+            self.__store._open(owner, generation)
+        except (OperationRetired, UnsupportedCandidatePath):
+            raise
+        except Exception:
+            raise CandidatePreparationFailed() from None
+
+    def close_generation(self, context: SyntheticAccountContext, generation: int) -> None:
+        """Synthetic gate/cleanup only; NOT Core A/F/D or full withdrawal."""
+        owner = _owner(context)
+        generation = _generation(generation)
+        try:
+            self.__store._close(owner, generation)
+        except Exception:
             raise CandidatePreparationFailed() from None
 
     def retire(self, context: SyntheticAccountContext, sync_id: UUID) -> None:
