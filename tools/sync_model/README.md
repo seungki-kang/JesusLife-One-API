@@ -2,7 +2,24 @@
 
 2026-10-31. 설계 보조용이며 제품 구현이 아니다. 실제-data 활성화는 **BLOCKED**이고
 권한·보유·스키마 결정은 **AUTHOR_REVIEW_REQUIRED**다. 모델 성공으로 해제하지 않는다.
-기존 앱·API·테스트·CI·offline runner와 연결하지 않는다. 의존성은 Python 표준 라이브러리뿐이다.
+기존 앱·API·테스트·API CI·offline runner와 연결하지 않는다. 의존성은 Python 표준 라이브러리뿐이다.
+
+## 독립 모델 CI
+
+`.github/workflows/sync-model.yml`은 main 대상 pull request(초안 포함)에서 실행한다.
+기존 API CI와 같은 Ubuntu 24.04·Python 3.14.8 및 고정 action SHA를 사용하며,
+권한은 `contents: read`, 제한 시간은 10분이다. 프로젝트 의존성을 설치하지 않고 다음을 실행한다.
+
+```sh
+python -B -m unittest discover -s tools/sync_model -v
+python -B tools/sync_model/explore.py
+```
+
+`explore.py`는 불변식 위반(`result.errors`) 또는 상태 한도에 따른 잘림(`truncated=True`)이
+있으면 종료 코드 1을 반환한다. 오류와 잘림 없이 설정된 범위의 탐색을 마치면 종료 코드 0이다.
+설정된 깊이에 도달하는 것만으로는 잘림이나 실패로 처리하지 않는다. 깊이 경계의 후속 전이는
+검사하지 않으므로 CI 성공도 전체 증명을 보장하지 않는다. GitHub에서의 실제 실행은 **NOT_RUN**이다.
+설계 PR은 **Draft**를 유지하며 실제-data 수집·활성화는 **BLOCKED**다.
 
 ## 모델과 제안서 대응
 
@@ -41,14 +58,15 @@ git diff --check
 .\.venv\Scripts\python.exe -B -c "from pathlib import Path; files = [Path('docs/design/nn-real-completion-sync-proposal.md'), *sorted(Path('tools/sync_model').glob('*'))]; bad = [(str(p), 'whitespace') for p in files if p.is_file() and ((t := p.read_text(encoding='utf-8')).endswith(chr(10)) is False or t.endswith(chr(10)*2) or any(line.rstrip() != line or chr(9) in line for line in t.splitlines()))]; print('files=', len(files), 'issues=', bad); raise SystemExit(bool(bad))"
 ```
 
-- unittest: **11개 PASS**, skip 없음. 이 수는 탐색 상태 수와 별개다.
+- unittest: **17개 PASS**, skip 없음. 종료 코드 판단은 작은 `Result` fixture로 검증하며,
+  깊이 경계와 상태 한도 잘림은 작은 탐색으로 검증한다. 이 수는 탐색 상태 수와 별개다.
 - 정상 모델 BFS: 깊이 **10**, 최대 고유 상태 **60,000**, 실제 고유 상태 **51,759**,
   검사 전이 **1,043,610**, state-limit 잘림 없음, 반례 없음.
 - 깊이 경계의 상태도 방문 상태에 포함하지만 그 상태의 후속 전이는 검사하지 않는다.
   no-op/거부/중복 전이도 검사 전이 수에 포함한다. FIFO와 고정 이벤트 순서로 결정적이다.
   깊이 경계 때문에 탐색은 항상 유한하며 전체 증명이 아니다. D 도달은 별도 unittest에서도 확인한다.
 - `git diff --check`와 미추적 파일 별도 whitespace 검사: PASS (최종 작업 보고와 함께 확인).
-- 별도 whitespace 검사: 제안서 포함 5개 파일, trailing whitespace·탭·EOF 문제 0개.
+- 별도 whitespace 검사: 제안서 포함 6개 파일, trailing whitespace·탭·EOF 문제 0개.
   `pip check`: PASS (`No broken requirements found.`). 위 검증 명령은 모두 종료 코드 0이다.
 
 음성 대조군은 `test_fault` 인자를 테스트에서만 전달한다. CLI는 정상 모델만 실행한다.

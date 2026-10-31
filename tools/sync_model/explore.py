@@ -43,7 +43,11 @@ def explore(depth=10, state_limit=60000, *, test_fault=None):
     return Result(len(seen), transitions, depth, state_limit, truncated)
 
 
-if __name__ == "__main__":
+def main():
     result = explore()
     print(result)
-    raise SystemExit(bool(result.errors))
+    return int(bool(result.errors) or result.truncated)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
