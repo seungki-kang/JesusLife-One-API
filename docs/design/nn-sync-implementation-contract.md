@@ -266,3 +266,47 @@ shape는 미확정이다. 동일 operation replay와 혼동하거나 처리 방�
 
 실제 수집 **BLOCKED**, 앱 적용 **AUTHOR_REVIEW_REQUIRED** 유지.
 실제 DB·기기·앱 통합·CI·migration·배포는 **NOT_RUN**이다.
+
+## 합성 메모리 생성·ACK 재생 후보 구현 기록 (2026-10-31)
+
+이번 승인 범위에서만 [후보 서비스·메모리 저장소 전체 소스](../../app/modules/neorang_narang/real_sync_candidate.py)와
+[전용 테스트 전체 소스](../../tests/test_nn_real_sync_candidate.py)를 추가했다.
+시작 브랜치 `feature/nn-real-sync-idempotency`, HEAD `0f50e40`, clean을 확인했다.
+위의 과거 미구현·검증 기록은 당시 증거이며 아래 합성 후보 구현과 구분한다.
+
+- 호출자가 합성 계정 context·store·시계를 명시 제공한다. context는 실제 인증 결과가
+  아니며 계정·동의·정책 검증을 대신하는 기본 승인 구현이 없다. 요청 metadata로 owner를 받지 않는다.
+- 정확한 DTO 타입의 raw 필드와 중첩 metadata를 새 DTO로 재검증한다. `model_construct`,
+  `model_copy(update=...)`, `__dict__` 변경을 검증 완료로 신뢰하지 않는다. 유효한 우회 객체는
+  재검증 뒤 허용하고 잘못된 형태·extra·subclass는 거부한다. 정규화된 전체 명령 JSON 문자열을
+  저장하므로 metadata·generation·policy·base_revision·sync_id도 비교에 포함된다.
+- owner+operation receipt의 동일 명령만 `replayed=true`다. 최초 operation/sync ID,
+  applied_revision·received_at을 유지하고 current_revision은 현재 record에서 읽는다.
+  재생에서 시계를 호출하지 않는다. 최초 received_at은 주입된 접수 시각 **후보**다.
+  실제 서비스 최초 접수와 commit 시각의 구분은 여전히 문서 후보이며 확정하지 않았다.
+- 다른 명령은 내부 `idempotency_key_reused`, 다른 operation+같은 owner/sync ID는 내부
+  `unsupported_candidate_path`로 상태 변경 없이 거부한다. 후자는 응답 계약 미확정으로
+  성공/replay 의미나 HTTP 409를 부여하지 않았다. 잘못된 입력·준비 실패도 고정 내부 오류이며
+  입력·식별자·payload를 메시지나 로그에 넣지 않는다. HTTP 오류 처리는 없다.
+- 최초 revision=1 ACK 검증, record/receipt의 새 dict 구성까지 완료한 뒤 단일 상태 참조를
+  교체한다. 반영 전 시계·ACK 실패에 부분 상태가 없다. 범용 transaction 프레임워크는 없다.
+  실제 DB의 내구 commit·rollback·잠금·장애 복구와 다르며 crash/persistence 보장이 없다.
+  단일 인스턴스 순차 호출과 재진입하지 않는 시계만 지원한다. 동시성·다중 process/instance는 미지원이다.
+- 공개 저장소 API는 계정별 개수만 반환하고 dict/record/receipt 참조를 반환하지 않는다.
+  입력·ACK와 저장 문자열 snapshot은 참조를 공유하지 않는다. Python reflection/private 접근을
+  방어하는 보안 sandbox는 아니다. 테스트의 private 상태 접근은 불변식 확인과 현재 revision
+  조회의 white-box 검증용이며 공개 수정 API는 없다.
+
+이번 실행: `.venv\Scripts\python.exe -B -m unittest tests.test_nn_real_sync_candidate tests.test_nn_real_sync_dto -v`
+**36 PASS (신규 12 + 기존 DTO 24), FAIL 0, SKIP 0**.
+`.venv\Scripts\python.exe -B -m scripts.test_offline`은 **170개 중 148 PASS·22 SKIP, FAIL 0**.
+기존 환경 파일·MySQL·외부 네트워크 차단 가드와 합성 임시 SQLite 범위를 확인했고
+러너/기존 fixture를 변경하지 않았다. 거부 경로의 고정 `result=FAIL` 로그는 테스트 실패가 아니다.
+`.venv\Scripts\python.exe -B -m pip check`는 PASS다.
+이전 사용자 보고 DTO 24 PASS·offline 136 PASS/22 SKIP와 이번 실행 결과를 혼합하지 않는다.
+참조 검색에서 후보 import는 전용 테스트뿐이고 router/app 등록·전역 store/service 생성·설정 접근은 없다.
+
+삭제·철회·erased receipt·generation fence·현재 권한 재검사·보유기간·재시작 복구·영속성은
+미구현이다. 이름의 Real은 운영 준비를 뜻하지 않는다. 이 후보는 실제 수집에 **사용 불가 / BLOCKED**,
+앱 적용은 **AUTHOR_REVIEW_REQUIRED**다. HTTP·실제 동의·삭제 안전성·DB·기기·앱 통합·migration·배포는
+이번 증거 범위 밖이며 **NOT_RUN**이다.
