@@ -262,3 +262,23 @@ commit·push·PR 생성·병합·배포·브랜치 전환·정리는 수행하�
 5.1~5.5 의사코드와 8절 runtime 권한을 정적으로 대조했다. gates는 SELECT/INSERT/UPDATE(upsert 포함), records는 SELECT/INSERT/DELETE, receipts는 SELECT/INSERT/UPDATE, barriers는 SELECT/INSERT만 사용한다. real version은 SELECT만 허용하고 marker 기록·DDL은 migration 관리자 경계다. 같은 종류의 추가 불일치는 발견하지 않았다. 실제 MySQL 권한·잠금 동작을 검증한 결과는 아니다.
 
 이번 UTF-8·공백·상대 링크·`git diff --check`·신규 파일 별도 공백 검사와 최종 Git 상태 결과는 이번 작업의 최종 보고에 구분해 기록한다. DB·테스트·migration·서비스·pip check·backup 복원은 사용자 지정 범위에 따라 **NOT_RUN**이다. 실제 수집은 **BLOCKED**, 앱 적용은 **AUTHOR_REVIEW_REQUIRED**를 유지한다.
+
+## 13. 미연결 합성 repository 구현 결과 (2026-11-01)
+
+`feature/nn-real-sync-mysql-repository`, HEAD `354e199`, clean에서 시작했다. 이번 사용자 승인은 합성 미연결 코드에 한정된다. [repository 계약](../../app/modules/neorang_narang/real_sync_repository.py)에 공통 입력 재검증·기존 고정 오류·공개 protocol을 분리하고 기존 후보 import를 재노출했다. DTO와 메모리의 기존 범위를 유지하며 [MySQL 구현](../../app/modules/neorang_narang/real_sync_mysql.py)에서만 BIGINT·UTF-8 1..256 bytes·문자열 날짜·UTC DATETIME(6) 후보 규칙을 검사한다.
+
+connector와 clock은 필수 주입이며 기본 연결·설정 import·전역 instance·DDL·운영 연결은 없다. connector는 새 전용 비풀링 연결(autocommit 비활성, 진행 transaction 없음, dictionary cursor)을 넘기고 소유권을 repository에 이전한다. close는 pool 반환이 아닌 물리적 폐기여야 한다. 호출자는 schema shape·권한·InnoDB·내구성·연결 설정의 별도 검증을 책임진다. runtime은 별도 real marker 1만 확인하며 marker를 전체 schema 검증으로 간주하지 않는다.
+
+명령마다 한 연결·READ COMMITTED transaction·owner gate upsert/잠금을 사용한다. gate 다음 owner의 receipts/records/barriers 전체를 각각 binary ID 순으로 잠그는 보수적 구현이다. 무제한 close 목록 대신 테이블당 **10,000행 후보 한도**를 적용하며 초과 시 전체 rollback한다. lock/용량 비용은 측정하지 않았다. close는 내부 반복 쓰기도 한 commit이며 기존 장벽은 SELECT만, 새 장벽은 INSERT만 한다. 활성 비교값은 record 단일 저장, erased receipt는 owner/operation/state만 남긴다.
+
+commit 확인 후에만 결과를 반환한다. commit 예외와 rollback 실패는 `transaction_outcome_unknown`이며 같은 명령을 새 연결로 조정한다. 자동 재시도는 없다. deadlock/timeout/예상 밖 duplicate는 전체 rollback 확인 후 `storage_retryable`로 분류하므로 호출자가 같은 명령을 제한된 backoff로 재시도할 수 있다. commit 확인 뒤 close 실패는 `cleanup_failed_after_commit`이다. 오류의 고정 `outcome`과 `cleanup_failed`는 transaction 결과와 정리 실패를 구분하며 원 SQL/입력/ID/ValidationError를 문자열·repr·로그로 내보내지 않는다. traceback locals를 수집하는 외부 계측의 안전성은 구현하지 않았다.
+
+[공통 관찰 계약](../../tests/nn_real_sync_contract.py)은 메모리에서 실행하며 private 상태·생성자 patch 검사는 메모리 전용으로 유지한다. [MySQL 단위 검사](../../tests/test_nn_real_sync_mysql.py)는 정해진 결과 집합과 실패 지점만 주입하며 SQL 엔진을 흉내 내지 않는다. 이를 실제 MySQL 공통 계약 PASS로 집계하지 않는다. offline runner는 guard 설치 뒤 자동 discovery하므로 변경하지 않았다.
+
+- `.venv\Scripts\python.exe -B -m unittest tests.test_nn_real_sync_mysql tests.test_nn_real_sync_candidate tests.test_nn_real_sync_dto`: **81 PASS, 0 FAIL, 0 SKIP**.
+- `.venv\Scripts\python.exe -B -m scripts.test_offline`: **193 PASS, 0 FAIL, 22 SKIP** (215 total). 고정 `result=FAIL` 로그는 기존 인증 거부 경로 검사의 출력이며 unittest 실패가 아니다. 신규 빈 skip 테스트는 없다.
+- 실제 MySQL 공통 계약·다중 연결 잠금·내구성·프로세스/DB 재시작·복원·migration·권한·Core 결합·CI는 **NOT_RUN**. 9절의 실제 DB 인수 조건과 Core ticket/A/F/D·inventory·보유/복원 결정은 그대로 남는다.
+
+합성 코드와 DB 미접속 검증 결과이며 영속화 완료·운영 안전성 증명이 아니다. 실제 수집 **BLOCKED**, 보호 경계·실험 스키마의 앱 적용 **AUTHOR_REVIEW_REQUIRED** 유지. migration/runner·router/API/factory·Core·Flutter·운영 설정·CI는 변경하지 않았고 DB·네트워크·기기·비밀·백업 접근이나 패키지 설치·commit·push·PR 생성은 하지 않았다.
+
+Capacity reservation correction (DB-disconnected candidate): the union of barrier sync IDs and active record sync IDs must remain at most `MAX_OWNER_ROWS`. Create checks this union including the new sync before payload INSERT, while preserving the separate record/receipt limits. An absent-sync retire checks existing barriers, all active records and the requested sync together; overflow returns fixed `storage_failed` before payload writes and rolls back. Accepted active retire/close converts a reservation to a barrier without increasing capacity; close retains one commit. Already overreserved state fails closed with `storage_integrity_failed`. No marker removal, limit increase, compression or partial commit is used. Small-limit scripted connection regressions cover these cases without a SQL engine, including create rejection when existing active records consume the reservation; real MySQL remains NOT_RUN. Real collection remains BLOCKED; app adoption remains AUTHOR_REVIEW_REQUIRED.

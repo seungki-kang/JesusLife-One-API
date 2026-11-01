@@ -12,6 +12,7 @@ from app.modules.neorang_narang.real_sync_candidate import (
     UnsupportedCandidatePath, OperationRetired, GenerationNotOpen,
 )
 from app.modules.neorang_narang.real_sync_schemas import RealCompletionCreate
+from tests.nn_real_sync_contract import RealSyncContract
 from tests.test_nn_real_sync_dto import candidate
 
 
@@ -19,7 +20,7 @@ STAMP = "2024-02-29T12:34:56.123400Z"
 CANARY = "SYNTHETIC_PRIVATE_CANARY"
 
 
-class RealSyncCandidateTests(unittest.TestCase):
+class RealSyncCandidateTests(RealSyncContract, unittest.TestCase):
     def setUp(self):
         self.a = SyntheticAccountContext(UUID(int=10))
         self.b = SyntheticAccountContext(UUID(int=11))
@@ -202,95 +203,30 @@ class RealSyncCandidateTests(unittest.TestCase):
                     self.assertEqual(before, self.state())
         self.clock.assert_not_called()
 
-    def test_initial_minimal_ack(self):
-        ack = self.service.create(self.a, self.command)
-        self.assertEqual(self.store.counts(self.a), (1, 1))
-        self.assertEqual(ack.model_dump(mode="json"), {
-            "operation_id": candidate()["operation_id"],
-            "sync_id": candidate()["metadata"]["sync_id"],
-            "applied_revision": 1, "current_revision": 1,
-            "replayed": False, "received_at": STAMP,
-        })
 
-    def test_retry_after_lost_response_and_repeated_replay(self):
-        first = self.service.create(self.a, self.command)
+    def test_memory_replay_and_conflicts_preserve_private_snapshot(self):
+        self.service.create(self.a, self.command)
         before = self.state()
-        self.clock.side_effect = RuntimeError(CANARY)
         for _ in range(3):
-            ack = self.service.create(self.a, self.command)
-            self.assertTrue(ack.replayed)
-            self.assertEqual(ack.model_dump(exclude={"replayed"}),
-                             first.model_dump(exclude={"replayed"}))
-        self.clock.assert_called_once_with()
-        self.assertEqual(before, self.state())
-        self.assertEqual(self.store.counts(self.a), (1, 1))
-
-    def test_uuid_normalization_replays(self):
-        data = candidate()
-        value = "abcdefab-cdef-1abc-8abc-abcdefabcdef"
-        data["operation_id"] = data["metadata"]["sync_id"] = value
-        first = self.service.create(self.a, RealCompletionCreate.model_validate(data))
-        for form in (value.upper(), value.replace("-", ""), UUID(value)):
-            data["operation_id"] = data["metadata"]["sync_id"] = form
-            ack = self.service.create(self.a, RealCompletionCreate.model_validate(data))
-            self.assertTrue(ack.replayed)
-            self.assertEqual(first.operation_id, ack.operation_id)
-        self.assertEqual(self.store.counts(self.a), (1, 1))
-
-    def test_each_valid_command_field_change_conflicts(self):
-        self.service.create(self.a, self.command)
-        before = self.state()
-        changes = (("policy_version", CANARY),
-                   ("sync_id", UUID(int=30)), ("course_number", 2),
-                   ("completed_on", "2024-03-01"))
-        for field, value in changes:
-            with self.subTest(field=field):
-                data = candidate()
-                target = data["metadata"] if field in data["metadata"] else data
-                target[field] = value
-                with self.assertRaisesRegex(IdempotencyKeyReused,
-                                            "^idempotency_key_reused$"):
-                    self.service.create(self.a, RealCompletionCreate.model_validate(data))
-                self.assertEqual(before, self.state())
-        # base_revision has only one valid value; bypass changes must be rejected.
-        with self.assertRaises(InvalidCandidateInput):
-            self.service.create(self.a, self.command.model_copy(update={"base_revision": 1}))
-        self.assertEqual(before, self.state())
-
-    def test_other_operation_same_sync_is_unsupported_even_if_content_changes(self):
-        self.service.create(self.a, self.command)
-        before = self.state()
-        for course in (1, 2):
-            data = candidate()
-            data["operation_id"] = UUID(int=40)
-            data["metadata"]["course_number"] = course
-            with self.assertRaisesRegex(UnsupportedCandidatePath,
-                                        "^unsupported_candidate_path$"):
-                self.service.create(self.a, RealCompletionCreate.model_validate(data))
+            self.service.create(self.a, self.command)
             self.assertEqual(before, self.state())
-        self.clock.assert_called_once_with()
-
-    def test_account_isolation_same_uuids_and_different_content(self):
-        self.service.create(self.a, self.command)
-        data = candidate()
-        data["policy_version"] = CANARY
-        other = RealCompletionCreate.model_validate(data)
-        self.assertFalse(self.service.create(self.b, other).replayed)
-        self.assertTrue(self.service.create(self.b, other).replayed)
-        self.assertTrue(self.service.create(self.a, self.command).replayed)
+        for changes, error in (({"policy_version": CANARY}, IdempotencyKeyReused),
+                               ({"operation_id": UUID(int=40)}, UnsupportedCandidatePath)):
+            with self.assertRaises(error):
+                self.service.create(self.a, self.command.model_copy(update=changes))
+            self.assertEqual(before, self.state())
         self.assertEqual(self.store.counts(self.a), (1, 1))
-        self.assertEqual(self.store.counts(self.b), (1, 1))
-        with self.assertRaises(IdempotencyKeyReused):
-            self.service.create(self.a, other)
-        self.assertTrue(self.service.create(self.b, other).replayed)
 
-    def test_same_date_course_distinct_ids_never_merge(self):
+    def test_memory_private_counts_for_normalization_accounts_and_distinct_ids(self):
         self.service.create(self.a, self.command)
-        data = candidate()
-        data["operation_id"] = UUID(int=50)
-        data["metadata"]["sync_id"] = UUID(int=51)
-        self.assertFalse(self.service.create(self.a, RealCompletionCreate.model_validate(data)).replayed)
+        normalized = RealCompletionCreate.model_validate_json(self.command.model_dump_json())
+        self.service.create(self.a, normalized)
+        self.assertEqual(self.store.counts(self.a), (1, 1))
+        self.service.create(self.b, self.command)
+        self.assertEqual(self.store.counts(self.b), (1, 1))
+        self.service.create(self.a, self.command_for())
         self.assertEqual(self.store.counts(self.a), (2, 2))
+        self.assertEqual(self.store.counts(self.b), (1, 1))
 
     def test_bad_clock_and_ack_construction_leave_no_partial_state(self):
         for value in (CANARY, None, 123, "2024-02-30T00:00:00Z"):
