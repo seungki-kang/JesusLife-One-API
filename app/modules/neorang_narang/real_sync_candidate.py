@@ -16,41 +16,12 @@ from .real_sync_schemas import (
 )
 
 
-class InvalidCandidateInput(ValueError):
-    def __init__(self):
-        super().__init__("invalid_candidate_input")
-
-
-class IdempotencyKeyReused(ValueError):
-    def __init__(self):
-        super().__init__("idempotency_key_reused")
-
-
-class OperationRetired(ValueError):
-    def __init__(self):
-        super().__init__("operation_retired")
-
-
-class UnsupportedCandidatePath(ValueError):
-    def __init__(self):
-        super().__init__("unsupported_candidate_path")
-
-
-class CandidatePreparationFailed(ValueError):
-    def __init__(self):
-        super().__init__("candidate_preparation_failed")
-
-
-class GenerationNotOpen(ValueError):
-    def __init__(self):
-        super().__init__("generation_not_open")
-
-
-@dataclass(frozen=True, repr=False)
-class SyntheticAccountContext:
-    """Explicit test identity boundary; NOT an authentication result."""
-
-    owner: UUID
+# Re-export established imports for compatibility.
+from .real_sync_repository import (
+    CandidatePreparationFailed, GenerationNotOpen, IdempotencyKeyReused,
+    InvalidCandidateInput, OperationRetired, SyntheticAccountContext,
+    UnsupportedCandidatePath, _command, _generation, _owner,
+)
 
 
 @dataclass(frozen=True, repr=False)
@@ -191,19 +162,6 @@ class SyntheticMemoryStore:
                         next_opened, next_retired)
 
 
-def _owner(context: SyntheticAccountContext) -> UUID:
-    if type(context) is not SyntheticAccountContext or type(context.owner) is not UUID:
-        raise InvalidCandidateInput()
-    return context.owner
-
-
-def _generation(value: int) -> int:
-    # Internal PROPOSED ordering only; does not grant consent/policy authority.
-    if type(value) is not int or value <= 0:
-        raise InvalidCandidateInput()
-    return value
-
-
 class RealSyncCandidateService:
     """Synthetic create/replay/retire only; real collection BLOCKED.
 
@@ -221,18 +179,7 @@ class RealSyncCandidateService:
     def create(self, context: SyntheticAccountContext,
                command: RealCompletionCreate) -> RealCompletionAck:
         owner = _owner(context)
-        try:
-            if (type(command) is not RealCompletionCreate
-                    or type(command.metadata) is not RealCompletionMetadata):
-                raise InvalidCandidateInput()
-            raw = dict(vars(command))
-            raw["metadata"] = dict(vars(command.metadata))
-            if command.model_extra or command.metadata.model_extra:
-                raise InvalidCandidateInput()
-            validated = RealCompletionCreate.model_validate(raw)
-            _generation(validated.consent_generation)
-        except Exception:
-            raise InvalidCandidateInput() from None
+        validated = _command(command)
         try:
             return self.__store._apply(owner, validated, self.__clock)
         except (IdempotencyKeyReused, UnsupportedCandidatePath, OperationRetired,
