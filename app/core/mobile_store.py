@@ -1,4 +1,5 @@
 """Durable mobile handoff + generation serialization. No refresh credentials."""
+from contextlib import nullcontext
 from uuid import UUID
 from fastapi import HTTPException
 from .core_store import CoreStore, digest, utc
@@ -11,9 +12,18 @@ class MobileCoreStore(CoreStore):
         if cursor.fetchall() != [{'version': 1}]:
             raise HTTPException(503, 'Mobile storage unavailable')
 
-    def begin_mobile(self, *, state, transaction, challenge, return_uri, now):
+    def begin_mobile(self, *, state, transaction, challenge, return_uri, now, app_id=None, client_id=None):
         with self.transaction() as connection, connection.cursor() as c:
             self.ready(c)
+            if app_id is not None:
+                if not client_id:
+                    raise denied()
+                c.execute('INSERT INTO mobile_logins '
+                          '(state_hash,transaction_id,challenge,return_uri,expires_at,app_id,client_id) '
+                          'VALUES (%s,%s,%s,%s,%s,%s,%s)',
+                          (digest(state), transaction, challenge.encode(), return_uri.encode(), utc(now+300),
+                           app_id.encode(), client_id.encode()))
+                return
             c.execute('INSERT INTO mobile_logins '
                       '(state_hash,transaction_id,challenge,return_uri,expires_at) VALUES (%s,%s,%s,%s,%s)',
                       (digest(state), transaction, challenge.encode(), return_uri.encode(), utc(now+300)))
@@ -27,8 +37,19 @@ class MobileCoreStore(CoreStore):
             if c.rowcount != 1:
                 raise denied()
 
-    def finish_mobile(self, state, browser, credential, account, code, *, now):
+    def mobile_binding(self, state, *, app_id, client_id, return_uri, now):
         with self.transaction() as connection, connection.cursor() as c:
+            self.ready(c)
+            c.execute('SELECT * FROM mobile_logins WHERE state_hash=%s', (digest(state),))
+            row = c.fetchone()
+            if (not row or row.get('app_id') != (app_id.encode() if app_id else None)
+                    or row.get('client_id') != (client_id.encode() if client_id else None)
+                    or row['return_uri'] != return_uri.encode()
+                    or row['expires_at'] <= utc(now) or row['consumed_at'] is not None or row['handoff_hash']):
+                raise denied()
+
+    def finish_mobile(self, state, browser, credential, account, code, *, now, app_id=None, client_id=None, connection=None):
+        with (self.transaction() if connection is None else nullcontext(connection)) as connection, connection.cursor() as c:
             self.ready(c)
             c.execute('SELECT * FROM mobile_logins WHERE state_hash=%s FOR UPDATE', (digest(state),))
             row = c.fetchone()
@@ -36,12 +57,25 @@ class MobileCoreStore(CoreStore):
                     or row['expires_at'] <= utc(now)
                     or self.decrypt(row['browser_ciphertext'], digest(state)) != browser):
                 raise denied()
+            if row.get('app_id') != (app_id.encode() if app_id else None):
+                raise denied()
+            if app_id is None and row.get('client_id') is not None:
+                raise denied()
+            if app_id:
+                if row.get('client_id') != client_id.encode():
+                    raise denied()
+                c.execute('SELECT * FROM app_sessions WHERE cookie_hash=%s', (digest(credential),))
+                session = c.fetchone()
+                if (not session or session.get('app_id') != app_id.encode()
+                        or session['client_id'] != client_id.encode() or session['account_id'] != str(account)
+                        or session['revoked_at'] is not None):
+                    raise denied()
             c.execute('UPDATE mobile_logins SET handoff_hash=%s,credential_ciphertext=%s,'
                       'account_id=%s,expires_at=%s,browser_ciphertext=NULL WHERE state_hash=%s',
                       (digest(code), self.encrypt(credential, digest(code)), str(account), utc(now+60), digest(state)))
             return row['transaction_id'], row['return_uri'].decode()
 
-    def exchange_mobile(self, transaction, code, verifier, return_uri, *, now):
+    def exchange_mobile(self, transaction, code, verifier, return_uri, *, now, app_id=None, client_id=None):
         with self.transaction() as connection, connection.cursor() as c:
             self.ready(c)
             c.execute('SELECT * FROM mobile_logins WHERE transaction_id=%s FOR UPDATE', (transaction,))
@@ -50,7 +84,18 @@ class MobileCoreStore(CoreStore):
                     or row['handoff_hash'] != digest(code) or row['return_uri'] != return_uri.encode()
                     or not matches_pkce(verifier, row['challenge'].decode())):
                 raise denied()
+            if (row.get('app_id') != (app_id.encode() if app_id else None)
+                    or (app_id and row.get('client_id') != client_id.encode())
+                    or (app_id is None and row.get('client_id') is not None)):
+                raise denied()
             credential = self.decrypt(row['credential_ciphertext'], digest(code))
+            if app_id:
+                c.execute('SELECT * FROM app_sessions WHERE cookie_hash=%s', (digest(credential),))
+                session = c.fetchone()
+                if (not session or session.get('app_id') != app_id.encode()
+                        or session['client_id'] != client_id.encode() or session['account_id'] != row['account_id']
+                        or session['revoked_at'] is not None or session['expires_at'] <= utc(now)):
+                    raise denied()
             c.execute('UPDATE mobile_logins SET consumed_at=%s,credential_ciphertext=NULL WHERE state_hash=%s',
                       (utc(now), row['state_hash']))
             return credential, UUID(row['account_id'])

@@ -85,6 +85,7 @@ class Auth0Provider:
         if redirect_uri not in (
             'http://127.0.0.1:8000/api/v1/auth/callback/web',
             'http://127.0.0.1:8000/api/v1/auth/callback/android',
+            'http://127.0.0.1:8000/api/v1/auth/callback/life-diary/android',
         ):
             raise denied()
         with stage('token_exchange_pkce'):
