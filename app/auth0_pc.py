@@ -108,6 +108,8 @@ def create_app(runtime=None):
 
     from app.core.mobile_routes import install_mobile
     install_mobile(app, current)
+    from app.core.life_diary_login import install_life_diary
+    install_life_diary(app, current)
 
     @app.get('/health')
     def health():
