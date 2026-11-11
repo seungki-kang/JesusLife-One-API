@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .auth0_poc import denied, pkce_challenge, validate_binding_candidate
 from .core_store import stamp, utc
+from .mobile_backup_store import access_backup
 
 CALLBACK = 'http://127.0.0.1:8000/api/v1/auth/callback/android'
 RETURN_URI = 'jesuslife-poc://auth/complete/android'
@@ -34,6 +35,11 @@ class Exchange(SafeBody):
 
 class Generation(SafeBody):
     generation: int = Field(strict=True, ge=1)
+
+
+class BackupUpload(Generation):
+    base_revision: int = Field(strict=True, ge=0)
+    envelope: str = Field(min_length=64, max_length=1048576, pattern=r'^[A-Za-z0-9_-]+$')
 
 
 class Synthetic(Generation):
@@ -157,6 +163,7 @@ def install_mobile(app, current):
     @routes.post(PREFIX + '/consent/revoke')
     def revoke(command: Generation, request: Request):
         runtime, account, _, _ = identity(request)
+        runtime, account, _, _ = identity(request)
         return runtime.store.mobile_status(account, revoke=command.generation, projection=projection)
 
     @routes.post(PREFIX + '/synthetic-completion')
@@ -173,6 +180,17 @@ def install_mobile(app, current):
             raise HTTPException(422, 'Invalid request') from None
         return runtime.store.mobile_status(account, projection=projection,
             create=(command.generation, metadata.model_dump(mode='json')))
+
+    @routes.get(PREFIX + '/record-backup')
+    def read_backup(request: Request, response: Response):
+        runtime, account, _, _ = identity(request)
+        response.headers['Cache-Control'] = 'no-store'
+        return access_backup(runtime.store, account)
+
+    @routes.put(PREFIX + '/record-backup')
+    def write_backup(command: BackupUpload, request: Request):
+        runtime, account, _, _ = identity(request)
+        return access_backup(runtime.store, account, update=command)
 
     @routes.post(PREFIX + '/logout')
     def logout(request: Request):

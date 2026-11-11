@@ -2,6 +2,7 @@
 from uuid import UUID
 from fastapi import HTTPException
 from .core_store import CoreStore, digest, utc
+from .mobile_backup_store import erase_backups
 from .auth0_poc import denied, matches_pkce
 
 
@@ -75,6 +76,7 @@ class MobileCoreStore(CoreStore):
                     active = False
                 through = max(through, revoke)
                 projection.erase(c, owner, through)
+                erase_backups(c, owner, through)
                 deletion = 'complete'
             result = None
             if create:

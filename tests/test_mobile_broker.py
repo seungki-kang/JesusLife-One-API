@@ -36,6 +36,8 @@ class Cursor:
     def __exit__(self, *args):
         self.raw.close()
     def execute(self, sql, args=()):
+        if 'information_schema.tables' in sql:
+            sql = "SELECT 1 FROM sqlite_master WHERE type='table' AND name='nn_mobile_backups'"
         sql = sql.replace(' FOR UPDATE', '').replace('%s', '?').replace('neorang_narang.', '')
         if 'ON DUPLICATE KEY UPDATE account_id=account_id' in sql:
             sql = sql.split(' ON DUPLICATE')[0].replace('INSERT INTO', 'INSERT OR IGNORE INTO')
