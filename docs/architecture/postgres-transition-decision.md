@@ -35,6 +35,7 @@ JesusLife 전체 플랫폼의 공통 업무 DB 기반을 마련한다. 향후 Ch
 다음은 **확정 결정**이다. 구현·운영 적용은 별도 승인 후 진행한다.
 
 - Supabase PostgreSQL을 업무 데이터 원본으로 사용한다.
+- 개발·시험·스테이징·운영 환경은 단계적으로 분리한다. 지금은 `local-test`와 Supabase 서울 `development` 준비부터 시작하며, 베타 전에 별도 `staging`, 정식 출시 전에 별도 `production` 프로젝트를 마련한다. 환경별 역할·격리·승격 원칙과 네 번째 승인 기록은 20절을 따른다. 실제 프로젝트 생성과 연결은 미승인이다.
 - Auth0를 공통 인증 제공자로 유지하며 Supabase Auth를 동시에 도입하지 않는다.
 - Auth0의 검증된 `(issuer, provider_subject)`는 외부 신원 식별자이며, 제품 데이터의 소유자 키는 내부 `accounts.account_id` UUID로 한다. 구체적인 확정 매핑 원칙은 11절과 두 번째 승인 기록인 18절을 따른다.
 - Flutter 앱은 Supabase DB에 직접 연결하지 않는다. 접근 구조는 **Flutter → FastAPI → PostgreSQL**이다.
@@ -240,6 +241,12 @@ MySQL 시험 브랜치와 `ee3f7dc`, main 기준 `b4e5111`을 비교·복구 기
 | service_role·BYPASSRLS 우회 검사 | service_role·BYPASSRLS·table owner 우회 가능성과 일반 요청의 해당 권한 사용 금지를 정기 시험 |
 | 백업·복원 test | 격리 복원 후 구조·version·receipt·동의·삭제 장벽 및 쓰기 재개 조건 검증 |
 | 개인정보 0건 | 모든 시험 자료가 합성자료이며 실제 개인정보 0건. 운영 자료 복제·덤프 사용 금지 |
+| local-test 환경 관문 | 재생성 가능한 격리 PostgreSQL에서 전체 migration 성공 |
+| development 환경 관문 | 원격 연결과 합성자료 통합시험 성공 |
+| staging 환경 관문 | migration·RLS·백업·복원 리허설 성공; 운영 dump·백업 사용 금지 |
+| production 환경 관문 | 배포 승인과 복구계획 확인 |
+| 환경별 식별자·비밀정보 격리 | 환경별 프로젝트 ID와 비밀정보가 서로 다름을 비밀값 노출 없이 확인 |
+| 운영 데이터 유출 방지 | 운영 데이터와 운영 백업이 개발·스테이징 등 하위환경으로 유출되지 않았음을 확인 |
 
 기존 전체 시험 명령은 `.venv\Scripts\python.exe -B -m scripts.test_offline`이다. PostgreSQL 시험 명령과 지원 서버·드라이버 버전은 구현 승인 후 정의한다. 패키지 설치나 DB 접속을 이번 검증에 포함하지 않는다.
 
@@ -248,6 +255,14 @@ MySQL 시험 브랜치와 `ee3f7dc`, main 기준 `b4e5111`을 비교·복구 기
 | 승인 대상 | 검토할 구체 사항 |
 |---|---|
 | Supabase 프로젝트와 리전 | 조직 소유권, 자료 위치, 연결 방식, 지원 PostgreSQL·확장 버전 |
+| 실제 개발 프로젝트 생성 | 20절은 환경 분리 원칙과 생성 시점만 승인하며 실제 Supabase 서울 개발 프로젝트 생성은 미승인 |
+| Supabase 조직 소유권과 관리자 | 조직 소유 주체와 관리자 지정·접근 권한 |
+| Free 또는 Pro 요금제 | 실제 요금제 선택·결제와 비용 한도 |
+| Auth0 tenant·application 실제 구성 | 비운영 tenant 공유 한계, 환경별 application·API·connection·redirect URI·secret 분리와 운영 tenant 분리 검증; 실제 tenant 생성과 요금제 선택은 미승인 |
+| 스테이징 생성 시점 | 베타 전 생성 원칙 안에서 구체적 생성 시점과 실행 승인 |
+| 운영 생성·배포 승인 | 정식 출시 전 별도 서울 프로젝트 생성과 운영 배포의 개별 승인 |
+| CI 비밀정보 저장 방식 | 사람의 로컬 비밀정보와 분리한 저장·접근·갱신 방식 |
+| 백업·PITR 요금제 | 백업·PITR 지원 범위와 요금제·비용 승인 |
 | Auth0 운영 tenant | issuer/audience/client/scope와 운영 계정 분리 등 실제 운영 tenant 설정. 외부 신원→내부 account_id UUID 매핑 원칙은 11절·18절에서 확정했으나 운영 설정은 미승인 |
 | 계정 병합·분리·탈퇴·복구 정책 | 계정 병합, 계정 분리, 계정 탈퇴 후 보유기간, 탈퇴 계정 복원, 추가 로그인 제공자 연결, 외부 신원 재연결, 관리자에 의한 계정 수정. 실제 신원 연결의 재인증과 별도 승인 흐름 |
 | 실제 role 이름 최종 확정 | 11절·19절의 역할 책임 구분은 확정하되 실제 role 이름과 생성은 별도 승인 |
@@ -301,3 +316,58 @@ MySQL 시험 브랜치와 `ee3f7dc`, main 기준 `b4e5111`을 비교·복구 기
 - 범위: **일반 업무 요청의 DB 역할과 격리 원칙**. 11절의 역할 분리, RLS 추가 방어선, 문맥 누락 시 기본 거부와 transaction-local 요청 문맥 원칙을 확정한다.
 - 미승인: **실제 role 생성, GRANT, RLS SQL, pooler, 백업 역할, 운영 비밀정보**. 실제 role 이름 최종 확정, GRANT·REVOKE, 각 테이블 RLS policy SQL, pooler 사용 여부, 백업·복원 역할, 운영 비밀정보 저장 위치, Supabase Data API 노출 schema 설정은 15절의 **AUTHOR_REVIEW_REQUIRED**로 유지한다.
 - 이 승인은 설계 결정 기록에 한정한다. 실제 DB 접속·role 생성·RLS 실행이나 코드·migration·운영 설정의 적용 승인은 포함하지 않는다.
+
+## 20. 환경 분리 승인 기록 (네 번째 승인 결정)
+
+- 승인일: **2026-11-12**.
+- 결정: **local-test + development부터 시작하고 staging과 production은 단계적으로 분리**한다.
+- 범위: **환경 분리 원칙과 생성 시점**. 지금은 로컬 시험 PostgreSQL과 Supabase 서울 개발 프로젝트만 준비 대상으로 삼는다.
+- 지금 승인되지 않은 것: **실제 Supabase 프로젝트 생성, 결제, Auth0 tenant 생성, 비밀정보 설정, DB 연결**. 이 기록은 환경 생성·설정·접속의 실행 승인이 아니다.
+
+### 20.1. 환경별 역할과 데이터 격리
+
+| 환경 | 구성·생성 시점 | 역할과 자료 제한 |
+|---|---|---|
+| `local-test` | Docker 또는 격리 PostgreSQL. 실제 Supabase 프로젝트가 아님 | migration, repository contract, 동시성, 장애, 백업·복원 시험. 합성자료만 사용하며 언제든 재생성 가능 |
+| `development` | Supabase `ap-northeast-2` Seoul. 지금 생성 검토 대상 | FastAPI 원격 연결과 통합시험. 합성자료와 명시된 개발자료만 사용하며 실제 교인·일기·은혜·기도 원문 사용 금지 |
+| `staging` | 베타 시험 전에 생성. development 및 production과 별도 Supabase 서울 프로젝트 | 운영과 같은 migration·역할·RLS·배포 절차 검증. 합성자료를 기본으로 사용하며 운영 DB dump 또는 백업 복원 금지 |
+| `production` | 정식 출시 전에 생성하는 별도 Supabase 서울 프로젝트 | 실제 사용자 자료의 유일한 운영 원본. Dashboard에서 임의 schema 변경 금지. 승인된 version-controlled migration과 배포 절차만 사용 |
+
+- 개발·스테이징·운영 프로젝트는 **DB, Storage, URL, 프로젝트 ID, 비밀번호, 역할 자격증명을 공유하지 않는다**.
+- 운영 데이터와 운영 백업을 개발·스테이징 환경으로 복사하지 않는다. local-test를 포함한 하위환경 시험에 운영 자료를 사용하지 않는다.
+- **모든 자동 시험은 합성자료를 사용한다**. development의 명시된 개발자료 허용은 실제 민감 원문 사용이나 자동 시험 자료 범위 확대를 뜻하지 않는다.
+
+### 20.2. Auth0 환경 원칙
+
+- 현재 PoC Auth0 설정은 비운영 개발 환경으로 취급한다.
+- 운영 Auth0 tenant는 비운영 tenant와 분리한다.
+- 비용 또는 요금제 제약으로 개발·스테이징 tenant를 바로 분리하지 못하면 비운영 tenant 안에서 application, API, connection, redirect URI, secret을 환경별로 분리한다.
+- 비운영 tenant 공유에는 한계가 있다. 일부 Auth0 설정은 tenant 전체에 적용되므로 application 등을 나누어도 해당 설정의 변경 영향은 환경 간 공유된다. tenant 공유 시 해당 설정과 영향 범위를 후속 실제 구성 문서에 명시한다.
+- 정식 출시 전에 운영 tenant 분리를 필수 검증한다.
+- 실제 tenant 생성과 요금제 선택은 아직 미승인이다. tenant·application 실제 구성은 15절의 **AUTHOR_REVIEW_REQUIRED**로 유지한다.
+
+### 20.3. 비밀정보 원칙
+
+- 환경별 DSN, 비밀번호, Auth0 secret, Supabase 키를 공유하지 않는다.
+- 비밀정보를 Git, 문서, 로그, Flutter 앱에 넣지 않는다.
+- `.env.example`에는 변수 이름과 비밀이 아닌 예시만 둔다.
+- CI 비밀정보와 사람의 로컬 비밀정보를 분리한다.
+- 운영 비밀정보를 개발자 로컬 파일로 복사하지 않는다.
+
+### 20.4. 배포와 승격 원칙
+
+- migration은 **로컬 시험 → 개발 → 스테이징 → 운영** 순서로 승격한다.
+- 같은 migration 파일을 환경별로 수정하지 않는다. 적용된 migration의 불변 원칙과 순방향 추가 원칙은 10절을 따른다.
+- 이전 환경 관문이 실패하면 다음 환경에 적용하지 않는다. 14절의 환경별 검증 관문을 적용한다.
+- production에 `supabase db reset` 같은 파괴적 초기화를 사용하지 않는다.
+- 개발환경 초기화 명령도 연결된 프로젝트를 확인하고 명시적으로 승인한 경우에만 실행한다.
+- 지금의 단계적 준비 결정은 스테이징·운영 관문을 생략하거나 개발환경을 운영 원본으로 사용하는 승인이 아니다.
+
+### 20.5. 공식 참고 링크
+
+아래는 환경·배포 설계 참고 자료다. 이 프로젝트의 확정 범위와 미승인 실행 경계는 위 승인 기록을 따른다.
+
+- [Supabase Docs — Deployment](https://supabase.com/docs/guides/deployment)
+- [Supabase Docs — Managing environments](https://supabase.com/docs/guides/deployment/managing-environments)
+- [Supabase Docs — Maturity model](https://supabase.com/docs/guides/deployment/maturity-model)
+- [Auth0 Docs — Set Up Multiple Environments](https://auth0.com/docs/get-started/auth0-overview/create-tenants/set-up-multiple-environments)
