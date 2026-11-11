@@ -36,6 +36,7 @@ JesusLife 전체 플랫폼의 공통 업무 DB 기반을 마련한다. 향후 Ch
 
 - Supabase PostgreSQL을 업무 데이터 원본으로 사용한다.
 - Auth0를 공통 인증 제공자로 유지하며 Supabase Auth를 동시에 도입하지 않는다.
+- Auth0의 검증된 `(issuer, provider_subject)`는 외부 신원 식별자이며, 제품 데이터의 소유자 키는 내부 `accounts.account_id` UUID로 한다. 구체적인 확정 매핑 원칙은 11절과 두 번째 승인 기록인 18절을 따른다.
 - Flutter 앱은 Supabase DB에 직접 연결하지 않는다. 접근 구조는 **Flutter → FastAPI → PostgreSQL**이다.
 - PostgreSQL 드라이버는 psycopg 3으로 한다. 첫 전환에서는 SQLAlchemy와 Alembic을 도입하지 않는다.
 - 순수 SQL migration 원칙을 PostgreSQL용으로 유지한다. 기존 MySQL migration은 수정하지 않고 PostgreSQL migration은 별도 경로에 추가한다.
@@ -139,7 +140,18 @@ repository 내부 자동 retry는 도입하지 않는다. rollback 확인, 새 �
 
 ## 11. 보안과 권한
 
-**확정 원칙:** Auth0의 검증된 sub를 사용자 소유권의 신원 기준으로 사용하고 요청 본문의 user_id를 신뢰하지 않는다. 현재 Core는 `(issuer, provider_subject)`를 내부 account UUID에 매핑하므로 Auth0 sub 문자열을 기존 UUID와 동일시하지 않는다. 이 매핑과 기존 API sub 의미의 호환성은 유지하고 운영 tenant/issuer 변경은 검토한다.
+**확정 결정 — Auth0와 내부 계정 연결:**
+
+- Auth0의 검증된 `(issuer, provider_subject)`는 외부 신원 식별자다. `provider_subject`는 Auth0의 `sub`에 해당하며, 제품 데이터의 소유자 키는 내부 `accounts.account_id` UUID다.
+- Auth0 `sub`를 제품 테이블의 PK나 직접 소유자 키로 사용하지 않는다. 모든 제품 테이블은 내부 `account_id` UUID를 참조한다.
+- `external_identities`는 `(issuer, provider_subject)`를 고유 키로 하고 `accounts.account_id`를 참조하는 `account_id`를 가진다.
+- 최초 검증 로그인에서 해당 외부 신원에 대응하는 계정이 없으면 `accounts`와 `external_identities`를 같은 트랜잭션으로 생성한다.
+- 이메일을 신원 고유키로 사용하지 않으며 이메일 일치만으로 계정을 자동 병합하지 않는다.
+- 한 내부 계정에 여러 외부 신원을 연결할 수 있는 구조는 허용한다. 실제 연결에는 재인증과 별도 승인 흐름이 필요하며, 추가 로그인 제공자 연결이나 외부 신원 재연결을 이번 결정으로 승인하지 않는다.
+- 요청 body, query, 임의 header의 `user_id`를 소유권 근거로 신뢰하지 않는다. 검증된 외부 신원을 내부 계정으로 매핑한 결과에서 소유자를 정한다.
+- 기존 MySQL CoreStore의 외부 신원→내부 계정 매핑과 기존 API `sub`가 내부 계정 UUID를 뜻하는 의미를 PostgreSQL에서도 보존한다.
+
+**AUTHOR_REVIEW_REQUIRED:** Auth0 운영 tenant 설정, 계정 병합·분리, 추가 로그인 제공자 연결, 계정 탈퇴 후 보유기간, 탈퇴 계정 복원, 외부 신원 재연결, 관리자에 의한 계정 수정은 미승인이다. 신원 매핑과 제품 소유자 키의 확정은 이 정책이나 실제 DB·인증 경계의 적용 승인을 대신하지 않는다.
 
 교회 소속은 개인 기록 공유 동의가 아니다. FastAPI가 검증된 신원, scope, 소유자, tenant, 동의 세대와 정책을 검사한다. 토큰, 이름, 은혜 원문, 일기, 서명을 로그·추적·예외에 넣지 않는다. 감사 기록도 원문과 SQL 인자를 제외한다.
 
@@ -193,7 +205,8 @@ MySQL 시험 브랜치와 `ee3f7dc`, main 기준 `b4e5111`을 비교·복구 기
 | 승인 대상 | 검토할 구체 사항 |
 |---|---|
 | Supabase 프로젝트와 리전 | 조직 소유권, 자료 위치, 연결 방식, 지원 PostgreSQL·확장 버전 |
-| Auth0 운영 tenant | issuer/audience/client/scope, 외부 subject와 내부 UUID 매핑·운영 계정 분리 |
+| Auth0 운영 tenant | issuer/audience/client/scope와 운영 계정 분리 등 실제 운영 tenant 설정. 외부 신원→내부 account_id UUID 매핑 원칙은 11절·18절에서 확정했으나 운영 설정은 미승인 |
+| 계정 병합·분리·탈퇴·복구 정책 | 계정 병합, 계정 분리, 계정 탈퇴 후 보유기간, 탈퇴 계정 복원, 추가 로그인 제공자 연결, 외부 신원 재연결, 관리자에 의한 계정 수정. 실제 신원 연결의 재인증과 별도 승인 흐름 |
 | RLS 적용 방식 | 사용자·tenant 문맥 전달, 최소 권한, BYPASSRLS·소유자 우회, 누락·누출 차단 |
 | 백업 보유기간 | 암호화·접근자·복구 목표·복원 리허설·삭제 장벽 보존과 재적용 |
 | 실제 데이터 이전 시점 | 시험 관문 완료, 쓰기 중지·컷오버·단일 원본 확인과 롤백 가능 시점 |
@@ -223,3 +236,11 @@ MySQL 시험 브랜치와 `ee3f7dc`, main 기준 `b4e5111`을 비교·복구 기
 
 - [Supabase Docs — Available regions](https://supabase.com/docs/guides/platform/regions): 일반 리전과 특정 리전 선택 안내.
 - [Supabase — Regions](https://supabase.com/regions): Northeast Asia (Seoul) 및 `ap-northeast-2` 표기.
+
+## 18. Auth0와 내부 계정 연결 승인 기록 (두 번째 승인 결정)
+
+- 승인일: **2026-11-12**.
+- 결정: **Auth0 (issuer, subject) → 내부 account_id UUID**. 여기서 `subject`는 11절의 `provider_subject`이며 Auth0의 검증된 `sub`다.
+- 범위: **신원 매핑과 제품 소유자 키**. 외부 신원은 `(issuer, provider_subject)`로 식별하고 제품 데이터는 내부 `accounts.account_id` UUID를 참조한다. 11절의 연결 원칙을 확정 결정으로 승인한다.
+- 미승인: **병합·분리·탈퇴·복구·운영 tenant 설정**. 추가 로그인 제공자 연결, 계정 탈퇴 후 보유기간, 탈퇴 계정 복원, 외부 신원 재연결, 관리자에 의한 계정 수정도 **AUTHOR_REVIEW_REQUIRED**로 유지한다.
+- 이 승인은 문서의 신원 매핑과 제품 소유자 키 결정에 한정한다. 코드·DB·migration·운영 설정의 실제 적용 승인은 포함하지 않는다.
