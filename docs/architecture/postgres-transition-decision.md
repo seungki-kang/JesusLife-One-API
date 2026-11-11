@@ -38,6 +38,7 @@ JesusLife 전체 플랫폼의 공통 업무 DB 기반을 마련한다. 향후 Ch
 - Auth0를 공통 인증 제공자로 유지하며 Supabase Auth를 동시에 도입하지 않는다.
 - Auth0의 검증된 `(issuer, provider_subject)`는 외부 신원 식별자이며, 제품 데이터의 소유자 키는 내부 `accounts.account_id` UUID로 한다. 구체적인 확정 매핑 원칙은 11절과 두 번째 승인 기록인 18절을 따른다.
 - Flutter 앱은 Supabase DB에 직접 연결하지 않는다. 접근 구조는 **Flutter → FastAPI → PostgreSQL**이다.
+- 일반 FastAPI 업무 요청은 최소 권한 `jl_api_runtime`을 사용하고 **FastAPI 권한 검사 + PostgreSQL RLS**를 함께 통과해야 한다. RLS는 인증·동의·제품 권한 검사를 대신하지 않는 추가 방어선이며 사용자 또는 tenant 문맥이 없으면 기본 거부한다. 상세 원칙과 세 번째 승인 기록은 11절·19절을 따른다.
 - PostgreSQL 드라이버는 psycopg 3으로 한다. 첫 전환에서는 SQLAlchemy와 Alembic을 도입하지 않는다.
 - 순수 SQL migration 원칙을 PostgreSQL용으로 유지한다. 기존 MySQL migration은 수정하지 않고 PostgreSQL migration은 별도 경로에 추가한다.
 - MySQL과 PostgreSQL의 장기 이중 쓰기 및 자동 양방향 동기화를 금지한다. 운영 전환 시 쓰기 원본은 하나여야 한다.
@@ -155,9 +156,42 @@ repository 내부 자동 retry는 도입하지 않는다. rollback 확인, 새 �
 
 교회 소속은 개인 기록 공유 동의가 아니다. FastAPI가 검증된 신원, scope, 소유자, tenant, 동의 세대와 정책을 검사한다. 토큰, 이름, 은혜 원문, 일기, 서명을 로그·추적·예외에 넣지 않는다. 감사 기록도 원문과 SQL 인자를 제외한다.
 
-PostgreSQL RLS는 추가 방어선이다. **제안 / AUTHOR_REVIEW_REQUIRED:** FastAPI가 검증한 사용자·tenant 문맥을 transaction 범위로 전달하고 누락 시 거부하며 연결 재사용 시 문맥 누출을 막는다. Supabase Auth의 auth.uid()가 자동으로 현재 Auth0/Core 계정을 제공한다고 가정하지 않는다. 테이블 소유자·BYPASSRLS 권한과 FORCE RLS 필요성을 검토한다.
+### 11.1. 확정 결정 — 최소 권한 역할과 이중 권한 검사
 
-강력한 service role의 무제한 사용을 금지한다. 앱용 최소 권한 DB role과 migration·관리 role을 분리한다. Supabase service key는 RLS를 우회하므로 서버에 있다는 이유만으로 권한 검사가 충족되지 않는다. 근거: [Supabase RLS 문서](https://supabase.com/docs/guides/database/postgres/row-level-security). 구체적 DB grants·RLS·Storage 접근 정책은 승인 전 적용하지 않는다.
+일반 FastAPI 업무 요청은 최소 권한 PostgreSQL 역할을 사용한다. **FastAPI 권한 검사와 PostgreSQL RLS를 함께 사용**하며 application authorization과 RLS를 둘 다 통과해야 한다. RLS는 추가 방어선이며 인증·동의·제품 권한 검사를 대신하지 않는다. 사용자 또는 tenant 문맥이 없으면 기본 거부한다.
+
+아래 역할 이름은 승인된 책임 구분을 설명하는 설계 명칭이다. 실제 role 이름 최종 확정과 생성·권한 적용은 15절의 별도 승인 대상이다.
+
+| 역할 | 사용 범위와 제한 |
+|---|---|
+| `jl_migration_owner` | schema와 table을 소유하며 migration·DDL에만 사용한다. 일반 FastAPI 런타임에서 사용하지 않는다. 비밀번호와 접속정보를 런타임 환경과 분리한다. |
+| `jl_api_runtime` | FastAPI 업무 요청 전용이다. SUPERUSER, CREATEDB, CREATEROLE, REPLICATION, BYPASSRLS를 금지하며 table·schema owner가 아니어야 한다. 승인된 schema와 table에 필요한 SELECT·INSERT·UPDATE·DELETE만 부여한다. `anon`, `authenticated` 같은 Supabase 기본 역할에 업무 테이블 접근을 자동 허용하지 않는다. |
+| `jl_backup_operator` | 백업·복원 전용 후보 역할이다. 구체적 권한과 사용 시점은 **AUTHOR_REVIEW_REQUIRED**이며 일반 API 요청에 사용하지 않는다. |
+| Supabase `service_role` | 일반 사용자 요청의 데이터 접근에 사용하지 않으며 Flutter 앱에 포함하지 않는다. 관리 작업에도 별도 승인·감사·최소 범위를 적용한다. |
+
+직접 PostgreSQL 접속 역할은 DB 연결에서 사용하는 역할이며, Supabase API의 `service_role` 키는 Supabase API 요청에 사용하는 자격증명이다. 둘을 같은 접속정보로 취급하지 않는다. Supabase API의 `service_role` 권한은 RLS 우회가 가능하므로 서버에 키가 있다는 이유만으로 권한 검사가 충족되지 않는다.
+
+### 11.2. 확정 RLS 원칙
+
+- 개인·교회·제품 데이터 테이블에 `ENABLE ROW LEVEL SECURITY`를 적용하고 필요한 테이블에는 `FORCE ROW LEVEL SECURITY`를 적용한다. `jl_api_runtime`은 table owner나 BYPASSRLS 역할이 아니어야 한다.
+- 정책이 없거나 `account_id`·`tenant_id` 문맥이 없으면 **default deny**다.
+- 개인 기록은 내부 `account_id`를 기준으로 격리한다. ChurchOS 데이터는 `tenant_id`와 역할을 함께 검사한다.
+- 교회 소속은 생명일기·은혜 원문 공유 동의가 아니다. 공유 기록은 별도 `share_grant` 또는 `consent` 계약을 검사한다.
+- identity·migration·관리 schema는 Supabase Data API에 노출하지 않는다. 실제 노출 schema 설정은 15절의 별도 승인 대상이다.
+
+### 11.3. 확정 요청 문맥 원칙
+
+- Auth0 검증 후 `external_identities`를 통해 내부 `account_id`를 얻는다. 요청 body/query/header의 `user_id` 또는 `tenant_id`를 신뢰하지 않으며 tenant는 서버에서 검증한 권한으로 정한다.
+- PostgreSQL transaction을 시작한 뒤 검증된 `account_id`·`tenant_id`를 transaction-local 값으로 설정한다. `SET LOCAL` 또는 `set_config(..., true)` 같은 transaction-local 방식을 사용한다.
+- plain `SET`으로 pool connection에 사용자 문맥을 남기지 않는다. commit·rollback 뒤 문맥이 제거되는지 시험한다.
+- connection pool을 도입하기 전에는 독점 연결로 의미를 먼저 검증한다. 나중에 pool을 도입하면 다른 사용자 문맥이 재사용 연결에 남지 않는지 회귀 테스트한다. pooler 사용 여부는 미승인이다.
+- Supabase Auth의 `auth.uid()`가 자동으로 현재 Auth0/Core 계정을 제공한다고 가정하지 않는다.
+
+### 11.4. RLS 한계와 후속 승인
+
+RLS는 SQL injection, 잘못 검증한 Auth0 토큰, 잘못 선택한 `account_id`를 자동 해결하지 않는다. application authorization과 RLS를 모두 통과하도록 유지하고 service 역할이나 table owner 우회를 정기적으로 시험한다.
+
+위 원칙의 승인은 실제 role 생성, GRANT·REVOKE, 각 테이블 RLS policy SQL, pooler, 백업 역할, 운영 비밀정보 설정의 실행 승인이 아니다. 구체적 DB 권한·RLS·Storage 접근 정책은 승인 전 적용하지 않는다.
 
 ## 12. 단계별 전환 순서
 
@@ -195,6 +229,15 @@ MySQL 시험 브랜치와 `ee3f7dc`, main 기준 `b4e5111`을 비교·복구 기
 | 응답 유실 test | commit 전후 장애, unknown outcome, cleanup 실패 후 같은 명령 조정; 중복 기록 없음 |
 | 삭제 부활 방지 test | retire/close와 create/replay 경쟁, 재동의·과거 철회 재전송·복원 뒤에도 장벽 유지 |
 | 테넌트·사용자 격리 test | 다른 owner/tenant 접근·조작 거부, 누락 문맥 거부, RLS 우회 권한 및 문맥 재사용 누출 검증 |
+| account_id 문맥 누락 | 내부 account_id 문맥이 없으면 접근 거부 |
+| tenant_id 문맥 누락 | tenant_id 문맥이 없으면 접근 거부 |
+| 다른 account_id 격리 | 다른 account_id의 기록 접근·조작 거부 |
+| 다른 tenant_id 격리 | 다른 tenant_id의 데이터 접근·조작 거부 |
+| 교회 역할과 개인 원문 | 교회 역할만으로 생명일기·은혜 등 개인 원문 접근 거부; 별도 share_grant 또는 consent 계약 검사 |
+| transaction 문맥 제거 | commit과 rollback 각각 종료 후 account_id·tenant_id 문맥 제거 확인; pool 도입 전 독점 연결로 검증 |
+| pool 재사용 문맥 격리 | pool 도입 시 재사용 연결에 다른 사용자·tenant 문맥 누출 없음 |
+| migration·runtime 역할 분리 | migration role과 runtime role 분리, 런타임의 소유권·금지 권한 부재와 접속정보 분리 확인 |
+| service_role·BYPASSRLS 우회 검사 | service_role·BYPASSRLS·table owner 우회 가능성과 일반 요청의 해당 권한 사용 금지를 정기 시험 |
 | 백업·복원 test | 격리 복원 후 구조·version·receipt·동의·삭제 장벽 및 쓰기 재개 조건 검증 |
 | 개인정보 0건 | 모든 시험 자료가 합성자료이며 실제 개인정보 0건. 운영 자료 복제·덤프 사용 금지 |
 
@@ -207,7 +250,13 @@ MySQL 시험 브랜치와 `ee3f7dc`, main 기준 `b4e5111`을 비교·복구 기
 | Supabase 프로젝트와 리전 | 조직 소유권, 자료 위치, 연결 방식, 지원 PostgreSQL·확장 버전 |
 | Auth0 운영 tenant | issuer/audience/client/scope와 운영 계정 분리 등 실제 운영 tenant 설정. 외부 신원→내부 account_id UUID 매핑 원칙은 11절·18절에서 확정했으나 운영 설정은 미승인 |
 | 계정 병합·분리·탈퇴·복구 정책 | 계정 병합, 계정 분리, 계정 탈퇴 후 보유기간, 탈퇴 계정 복원, 추가 로그인 제공자 연결, 외부 신원 재연결, 관리자에 의한 계정 수정. 실제 신원 연결의 재인증과 별도 승인 흐름 |
-| RLS 적용 방식 | 사용자·tenant 문맥 전달, 최소 권한, BYPASSRLS·소유자 우회, 누락·누출 차단 |
+| 실제 role 이름 최종 확정 | 11절·19절의 역할 책임 구분은 확정하되 실제 role 이름과 생성은 별도 승인 |
+| 실제 GRANT·REVOKE | 승인 schema·table별 최소 권한과 금지 권한, 기본 역할 접근 차단의 실제 적용 |
+| 각 테이블 RLS policy SQL | 11절·19절의 격리 원칙에 따른 테이블별 정책, ENABLE·FORCE 적용 대상, BYPASSRLS·소유자 우회와 누락·누출 차단 검증 |
+| pooler 사용 여부 | 독점 연결 검증 후 도입 판단, transaction-local 문맥과 재사용 연결 누출 회귀 검증 |
+| 백업·복원 역할 | jl_backup_operator 후보의 구체적 권한과 사용 시점, 일반 API 역할과 분리 |
+| 운영 비밀정보 저장 위치 | migration·runtime 접속정보 분리, service_role 키를 포함한 운영 자격증명 저장·접근·감사 방식 |
+| Supabase Data API 노출 schema 설정 | identity·migration·관리 schema 비노출과 업무 schema의 실제 노출 설정 |
 | 백업 보유기간 | 암호화·접근자·복구 목표·복원 리허설·삭제 장벽 보존과 재적용 |
 | 실제 데이터 이전 시점 | 시험 관문 완료, 쓰기 중지·컷오버·단일 원본 확인과 롤백 가능 시점 |
 | 개인정보 동의와 삭제 정책 | 목적·policy_version·세대 권한, 보유기간, 영구 장벽의 최소 식별자·수명, Storage·색인·백업 삭제 반영 |
@@ -244,3 +293,11 @@ MySQL 시험 브랜치와 `ee3f7dc`, main 기준 `b4e5111`을 비교·복구 기
 - 범위: **신원 매핑과 제품 소유자 키**. 외부 신원은 `(issuer, provider_subject)`로 식별하고 제품 데이터는 내부 `accounts.account_id` UUID를 참조한다. 11절의 연결 원칙을 확정 결정으로 승인한다.
 - 미승인: **병합·분리·탈퇴·복구·운영 tenant 설정**. 추가 로그인 제공자 연결, 계정 탈퇴 후 보유기간, 탈퇴 계정 복원, 외부 신원 재연결, 관리자에 의한 계정 수정도 **AUTHOR_REVIEW_REQUIRED**로 유지한다.
 - 이 승인은 문서의 신원 매핑과 제품 소유자 키 결정에 한정한다. 코드·DB·migration·운영 설정의 실제 적용 승인은 포함하지 않는다.
+
+## 19. DB 역할과 격리 원칙 승인 기록 (세 번째 승인 결정)
+
+- 승인일: **2026-11-12**.
+- 결정: **최소 권한 jl_api_runtime + FastAPI 권한 검사 + PostgreSQL RLS**.
+- 범위: **일반 업무 요청의 DB 역할과 격리 원칙**. 11절의 역할 분리, RLS 추가 방어선, 문맥 누락 시 기본 거부와 transaction-local 요청 문맥 원칙을 확정한다.
+- 미승인: **실제 role 생성, GRANT, RLS SQL, pooler, 백업 역할, 운영 비밀정보**. 실제 role 이름 최종 확정, GRANT·REVOKE, 각 테이블 RLS policy SQL, pooler 사용 여부, 백업·복원 역할, 운영 비밀정보 저장 위치, Supabase Data API 노출 schema 설정은 15절의 **AUTHOR_REVIEW_REQUIRED**로 유지한다.
+- 이 승인은 설계 결정 기록에 한정한다. 실제 DB 접속·role 생성·RLS 실행이나 코드·migration·운영 설정의 적용 승인은 포함하지 않는다.
