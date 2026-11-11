@@ -209,3 +209,17 @@ MySQL 시험 브랜치와 `ee3f7dc`, main 기준 `b4e5111`을 비교·복구 기
 패키지 설치, requirements 수정, 코드 구현, DB 접속, migration 실행, 실제 사용자 데이터 처리, commit, push, merge, 배포는 수행하지 않는다. 코드·requirements·migration·테스트 파일과 MySQL 비교 기준을 변경하지 않는다.
 
 문서 작성 후 검증은 UTF-8 재읽기와 한글 확인, Markdown 상대 링크가 있을 경우 존재 확인, `git diff --check`, `git status --short`로 한정한다. 테스트·pip check·실제 DB 시험은 이번 범위에서 NOT_RUN이며, 문서 검증 PASS는 구현이나 운영 전환 PASS가 아니다.
+
+## 17. 리전 결정 승인 기록
+
+- 승인일: **2026-11-12**.
+- 승인 범위: **리전 결정만 승인**한다. 15절의 Supabase 프로젝트와 리전 검토 항목 중 기본 리전 결정에 한해 이 기록을 적용한다.
+- Supabase 기본 리전: **Northeast Asia (Seoul)**. AWS 리전 코드는 **`ap-northeast-2`**이다.
+- 개발·스테이징·운영 모두 서울 리전을 기본으로 사용한다. 일반 APAC 선택이 아닌 **specific Seoul region**을 선택한다.
+- 실제 프로젝트 생성, 결제, 비밀정보 설정, DB 연결은 **미승인**이다. 이 기록은 해당 작업의 실행 승인이 아니다.
+- 조직 소유권, 프로젝트 수, 요금제는 **AUTHOR_REVIEW_REQUIRED**로 유지한다. 15절의 나머지 검토 항목과 구현·운영 적용 승인도 그대로 유지한다.
+
+공식 참고 링크:
+
+- [Supabase Docs — Available regions](https://supabase.com/docs/guides/platform/regions): 일반 리전과 특정 리전 선택 안내.
+- [Supabase — Regions](https://supabase.com/regions): Northeast Asia (Seoul) 및 `ap-northeast-2` 표기.
