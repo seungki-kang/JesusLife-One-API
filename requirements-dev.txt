@@ -20,3 +20,5 @@ pydantic_core==2.50.1
 starlette==1.8.0
 typing_extensions==4.16.0
 typing-inspection==0.4.4
+psycopg-binary==3.3.8
+tzdata==2026.6; sys_platform == 'win32'
