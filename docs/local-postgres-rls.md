@@ -129,3 +129,10 @@ runner에는 DB 식별·잠금·version/checksum·구조 확인을 먼저 구현
 확장한 로컬 실행으로 검증했고, inet 주소 표기 비교 실패는 host(inet_server_addr())로
 보정 후 재검증했다. 최종 FAIL은 없으며 임시 클러스터는 중지·정리한다.
 운영 migration/출시 PASS를 뜻하지 않는다. 패키지 설치와 git add/commit/push는 하지 않았다.
+
+## FastAPI 합성 요청 검증
+
+`test_fastapi_synthetic_church_read`는 임시 PostgreSQL 클러스터와 격리된
+FastAPI 테스트 앱에서 인증 누락, 소속 확인 후 RLS 조회, 다른 교회 접근 거부,
+소속 조회 장애와 업무 SQL 미실행, 트랜잭션 종료 후 범위 제거를 확인한다.
+실제 교회 소속 원본과 운영 API 연결은 후속 작업이다.
