@@ -1,5 +1,4 @@
 """ChurchOS HTTP/RLS rehearsal invoked only in the isolated PostgreSQL worker."""
-from functools import partial
 from unittest import TestCase
 from unittest.mock import Mock, patch
 from uuid import UUID
@@ -8,9 +7,9 @@ from fastapi.testclient import TestClient
 from psycopg.errors import InsufficientPrivilege
 
 from app.core.auth0_poc import AppSession, VerifiedAccess
-from app.core.postgres import PostgresConnectionError, connect_runtime
+from app.core.postgres import PostgresConnectionError
 from app.core.postgres_settings import RUNTIME_DSN
-from scripts.postgres_rls_support import local_connect
+from scripts.churchos_pc_settings import ENABLED, membership_connector
 from tests.test_postgres_rls import A, B, C, X, Y
 
 SCOPE = 'churchos:membership:read'
@@ -33,21 +32,22 @@ def verify_membership_read(port, database):
         )
         store.lookup.return_value = AppSession(UUID(int=100), UUID(account), *identity, 200)
 
-    def connect():
-        return connect_runtime(
-            {RUNTIME_DSN: f'postgresql://jl_api_runtime:synthetic_only@127.0.0.1:{port}/{database}'},
-            connector=partial(local_connect, port=port),
-        )
+    connect = membership_connector({
+        ENABLED: '1',
+        RUNTIME_DSN: f'postgresql://jl_api_runtime:synthetic_only@127.0.0.1:{port}/{database}',
+    })
 
     path = f'/api/v1/churches/{X}/membership'
     headers = {'Authorization': 'Bearer synthetic'}
     with TestClient(create_app(runtime)) as client:
         check.assertEqual(client.get(path, headers=headers).status_code, 404)
 
-    with TestClient(create_app(runtime, church_membership_connect=connect)) as client:
+    observed_connect = Mock(wraps=connect)
+    with TestClient(create_app(runtime, church_membership_connect=observed_connect)) as client:
         check.assertEqual(client.get(path).status_code, 401)
         bind(A, ())
         check.assertEqual(client.get(path, headers=headers).status_code, 403)
+        observed_connect.assert_not_called()
         bind(A, (SCOPE,))
         response = client.get(path, headers=headers, params={'account_id': B})
         check.assertEqual((response.status_code, response.json()), (
