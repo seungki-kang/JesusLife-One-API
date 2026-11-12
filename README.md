@@ -42,6 +42,23 @@ override와 합성 UUID로 401·403·동일 소유자 통과를 검증합니다.
 
 ## 로컬 실행
 
+PostgreSQL 설정 계약은 `app/core/postgres_settings.py`의
+`load_postgres_runtime_settings()`와 `load_postgres_migration_settings()`로 분리합니다.
+각각 `JESUSLIFE_POSTGRES_RUNTIME_DSN`, `JESUSLIFE_POSTGRES_MIGRATION_DSN`을
+프로세스 환경(또는 명시적으로 전달한 매핑)에서 검증하며 `.env`를 자동으로 읽지 않습니다.
+현재 FastAPI 시작·요청에는 연결하지 않은 설정 기반이며 DB 접속·SQL 실행은 없습니다.
+runtime 환경에는 runtime 자격증명만, 별도 migration 환경에는 migration 자격증명만
+제공합니다. 두 값이 함께 있으면 같은 서버·포트·DB·사용자 조합은 거부합니다.
+이는 실제 DB 역할·권한 분리 검증을 대신하지 않습니다.
+URI는 `postgresql` 또는 `postgres` 스킴, 사용자·비밀번호·호스트·DB를 요구합니다.
+쿼리 옵션은 `sslmode` 하나만 허용하며 원격은 `require`, `verify-ca`, `verify-full`을
+요구합니다. TLS 생략은 정확한 loopback 호스트에서만 허용합니다.
+설정 객체의 repr/str과 고정 오류 메시지는 DSN을 숨기지만 `.dsn`은 비밀값이므로
+직렬화·로그 출력하지 않습니다. `.env.example`은 합성 placeholder입니다.
+**Flutter에 DSN을 넣지 않습니다.** Flutter → FastAPI → PostgreSQL 경계를 유지하며
+실제 비밀정보 저장 위치·역할 생성·연결은
+[전환 결정서](docs/architecture/postgres-transition-decision.md)의 후속 승인 범위입니다.
+
 현재 보존된 .venv는 Python 3.14.8 환경입니다. 프로젝트 루트에서 PowerShell로 실행합니다.
 
 ```powershell
