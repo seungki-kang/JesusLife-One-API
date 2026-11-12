@@ -5,9 +5,14 @@ No environment credentials, existing server, or network on normal discovery.
 from pathlib import Path
 from functools import partial
 import unittest
+from unittest.mock import patch
 from uuid import UUID
 
 import psycopg
+from fastapi import Depends, FastAPI, HTTPException
+from fastapi.testclient import TestClient
+
+from app.core.auth import AuthContext, get_current_user
 
 from app.core.postgres import connect_migration, connect_runtime
 from app.core.postgres_settings import MIGRATION_DSN, RUNTIME_DSN
@@ -75,6 +80,104 @@ class PostgresRlsTest(unittest.TestCase):
 
     def count(self):
         return self.db.execute('SELECT count(*) FROM ' + TABLE).fetchone()[0]
+
+    def rehearsal_app(self):
+        app = FastAPI()
+
+        @app.get('/rehearsal/churches/{church_id}/records')
+        def read_records(church_id: UUID, user: AuthContext = Depends(get_current_user)):
+            try:
+                with self.db.transaction():
+                    self.db.execute('SET TRANSACTION ISOLATION LEVEL READ COMMITTED READ ONLY')
+                    self.scope(str(user.sub), str(church_id))
+                    membership = self.db.execute(
+                        'SELECT 1 FROM jl_rls_foundation.memberships '
+                        'WHERE account_id=%s AND church_id=%s',
+                        (user.sub, church_id),
+                    ).fetchone()
+                    if membership is None:
+                        raise HTTPException(403, 'Access denied')
+                    row = self.db.execute(
+                        'SELECT ARRAY(SELECT record_id::text FROM ' + TABLE +
+                        ' ORDER BY record_id) WHERE EXISTS ('
+                        'SELECT 1 FROM jl_rls_foundation.memberships '
+                        'WHERE account_id=%s AND church_id=%s)',
+                        (user.sub, church_id),
+                    ).fetchone()
+                    if row is None:
+                        raise HTTPException(403, 'Access denied')
+                    return [[record_id] for record_id in row[0]]
+            except psycopg.Error:
+                pass
+            raise HTTPException(503, 'Church access unavailable')
+
+        return app
+
+    def test_fastapi_synthetic_church_read(self):
+        app = self.rehearsal_app()
+        with TestClient(app) as client:
+            path = f'/rehearsal/churches/{X}/records'
+            other_church = f'/rehearsal/churches/{Y}/records'
+            self.assertEqual(client.get(path).status_code, 401)
+            app.dependency_overrides[get_current_user] = lambda: AuthContext(sub=UUID(A))
+            result = client.get(path, params={'account_id': D, 'church_id': Y})
+            self.assertEqual((result.status_code, result.json()), (200, [[R]]))
+            self.assertEqual(self.count(), 0)
+            self.db.rollback()
+            self.assertEqual(client.get(other_church, params={'account_id': D}).status_code, 403)
+            self.assertEqual(self.count(), 0)
+            self.db.rollback()
+
+            execute = self.db.execute
+
+            def fail_membership_lookup(sql, params=None):
+                if 'FROM jl_rls_foundation.memberships' in sql:
+                    raise psycopg.OperationalError('synthetic lookup failure')
+                return execute(sql, params)
+
+            with patch.object(self.db, 'execute', side_effect=fail_membership_lookup) as query:
+                result = client.get(path)
+                self.assertEqual((result.status_code, result.json()),
+                                 (503, {'detail': 'Church access unavailable'}))
+                self.assertFalse(any(TABLE in call.args[0] for call in query.call_args_list))
+            self.assertEqual(self.count(), 0)
+
+    def test_fastapi_rechecks_membership_after_concurrent_revocation(self):
+        app = self.rehearsal_app()
+        app.dependency_overrides[get_current_user] = lambda: AuthContext(sub=UUID(A))
+        original = snapshot()
+        execute = self.db.execute
+
+        with admin() as writer, TestClient(app) as client:
+            for commit_revocation in (False, True):
+                with self.subTest(commit_revocation=commit_revocation):
+                    def change_membership_before_read(sql, params=None):
+                        if sql.startswith('SELECT ARRAY('):
+                            deleted = writer.execute(
+                                'DELETE FROM jl_rls_foundation.memberships '
+                                'WHERE account_id=%s AND church_id=%s', (A, X),
+                            )
+                            self.assertEqual(deleted.rowcount, 1)
+                            if commit_revocation:
+                                writer.commit()
+                            else:
+                                writer.rollback()
+                        return execute(sql, params)
+
+                    try:
+                        with patch.object(self.db, 'execute',
+                                          side_effect=change_membership_before_read):
+                            result = client.get(f'/rehearsal/churches/{X}/records')
+                        expected = (403, {'detail': 'Access denied'}) if commit_revocation else (200, [[R]])
+                        self.assertEqual((result.status_code, result.json()), expected)
+                    finally:
+                        writer.rollback()
+                        writer.execute(
+                            'INSERT INTO jl_rls_foundation.memberships VALUES (%s,%s,true) '
+                            'ON CONFLICT (account_id, church_id) DO NOTHING', (A, X),
+                        )
+                        writer.commit()
+        self.assertEqual(snapshot(), original)
 
     def test_allowed_same_church_crud(self):
         self.scope()

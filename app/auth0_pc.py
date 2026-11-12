@@ -37,7 +37,7 @@ class PcRuntime:
                 raise HTTPException(403, 'Access denied')
         return request.headers['x-csrf-token']
 
-    def identity(self, request, *, product=True):
+    def identity(self, request, *, product=True, required_scope=None):
         authorization = request.headers.get('authorization')
         if authorization is not None:
             if not authorization.startswith('Bearer '):
@@ -65,11 +65,13 @@ class PcRuntime:
                 required = 'neorang-narang:read' if request.method in ('GET', 'HEAD') else 'neorang-narang:write'
                 if required not in token.scopes or not session.consent_active:
                     raise HTTPException(403, 'Access denied')
+        if required_scope is not None and required_scope not in token.scopes:
+            raise HTTPException(403, 'Access denied')
         from app.core.auth import AuthContext
         return AuthContext(sub=session.account_id)
 
 
-def create_app(runtime=None):
+def create_app(runtime=None, *, church_membership_connect=None):
     app = FastAPI(title='JesusLife PC Auth0 development PoC', debug=False)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=['127.0.0.1', 'testserver'])
     app.state.auth_runtime = runtime
@@ -78,6 +80,19 @@ def create_app(runtime=None):
     acceptance = AcceptanceRuns()
     acceptance_busy = Lock()
     app.include_router(router)
+
+    if church_membership_connect is not None:
+        from app.modules.churchos.router import create_membership_router
+
+        def church_identity(request: Request):
+            active_runtime = request.app.state.auth_runtime
+            if active_runtime is None:
+                raise denied()
+            return active_runtime.identity(
+                request, product=False, required_scope='churchos:membership:read',
+            )
+
+        app.include_router(create_membership_router(church_identity, church_membership_connect))
 
     @app.middleware('http')
     async def headers(request, call_next):
