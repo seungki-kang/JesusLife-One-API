@@ -128,8 +128,7 @@ def create_app(runtime=None, *, church_membership_connect=None):
     def health():
         return {'status': 'ok', 'service': 'jesuslife-pc-poc'}
 
-    @app.get('/auth/poc/login')
-    def login():
+    def begin_login(*, churchos=False):
         service = current()
         state, browser, nonce, verifier = [secrets.token_urlsafe(32) for _ in range(4)]
         client = next(iter(service.config.policy.client_ids))
@@ -138,13 +137,23 @@ def create_app(runtime=None, *, church_membership_connect=None):
         from app.core.auth0_poc import pkce_challenge
         query = urlencode({'response_type': 'code', 'client_id': client, 'redirect_uri': CALLBACK,
                            'audience': service.config.policy.audience,
-                           'scope': 'openid neorang-narang:read neorang-narang:write',
+                           'scope': 'openid neorang-narang:read neorang-narang:write'
+                           + (' churchos:membership:read' if churchos else ''),
                            'state': state, 'nonce': nonce, 'code_challenge': pkce_challenge(verifier),
                            'code_challenge_method': 'S256', 'prompt': 'login'})
         response = RedirectResponse(service.config.policy.issuer + 'authorize?' + query, status_code=303)
         response.set_cookie('jl_pc_login', browser, httponly=True, samesite='lax', max_age=300,
                             path='/api/v1/auth/callback')
         return response
+
+    @app.get('/auth/poc/login')
+    def login():
+        return begin_login()
+
+    if church_membership_connect is not None:
+        @app.get('/auth/poc/login/churchos')
+        def churchos_login():
+            return begin_login(churchos=True)
 
     @app.get('/api/v1/auth/callback/web')
     def callback(request: Request):
@@ -306,10 +315,18 @@ window.addEventListener('pageshow',event=>{if(event.persisted)location.reload();
 
 def configured_app():
     try:
-        config = validate(dotenv_values(PATH, interpolate=False))
-        return create_app(PcRuntime(config))
+        values = dotenv_values(PATH, interpolate=False)
+        config = validate(values)
+        runtime = PcRuntime(config)
     except Exception:
         return create_app()
+    # A bad optional setting cannot disable or alter the existing login flow.
+    from scripts.churchos_pc_settings import membership_connector
+    try:
+        connect = membership_connector(values)
+    except Exception:
+        connect = None
+    return create_app(runtime, church_membership_connect=connect)
 
 
 app = configured_app()
