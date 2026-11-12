@@ -1,5 +1,9 @@
 # JesusLife One API
 
+PostgreSQL 역할 분리·RLS 합성 검증과 롤백·복구 절차는
+[로컬 PostgreSQL RLS 기반](docs/local-postgres-rls.md)을 참조하세요.
+실제 API 연결과 원격 적용은 보류 상태입니다.
+
 현재 FastAPI 시작 골격이며 앱 버전은 0.1.0입니다.
 
 ## 현재 기능
