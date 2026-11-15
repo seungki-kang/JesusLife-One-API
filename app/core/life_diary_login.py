@@ -102,7 +102,13 @@ def install_life_diary(app, current):
     def callback(request: Request):
         runtime, registration = service()
         query = request.query_params
-        if (len(query.getlist('state')) != 1 or len(query.getlist('code')) != 1
+        expected = {'code', 'state'}
+        if 'iss' in query:
+            if query.getlist('iss') != [runtime.config.policy.issuer]:
+                raise denied()
+            expected.add('iss')
+        if (set(query.keys()) != expected
+                or len(query.getlist('state')) != 1 or len(query.getlist('code')) != 1
                 or query.get('error') or not query['code'] or len(query['code']) > 4096):
             raise denied()
         state, browser = query['state'], request.cookies.get('jl_ld_login')

@@ -136,7 +136,16 @@ class LifeDiaryLoginTest(unittest.TestCase):
         self.assertEqual(self.client.get(url.replace(PREFIX, NN_PREFIX), follow_redirects=False).status_code, 401)
         response = self.client.get(url, follow_redirects=False)
         code, state = self.ld.issue(response.headers['location'], 'auth0|synthetic-a')
-        params = {'code':code, 'state':state}
+        issuer = response.headers['location'].split('authorize?', 1)[0]
+        params = [('code', code), ('state', state)]
+        for label, issuers in [('wrong issuer', ['https://wrong.example/']),
+                               ('duplicate issuer', [issuer, issuer])]:
+            with self.subTest(case=label):
+                rejected = self.client.get(CALLBACK,
+                    params=params + [('iss', value) for value in issuers],
+                    follow_redirects=False)
+                self.assertEqual(rejected.status_code, 401)
+        params.append(('iss', issuer))
         self.assertEqual(self.client.get(CALLBACK, params=params, follow_redirects=False).status_code, 303)
         self.assertEqual(self.client.get(CALLBACK, params=params, follow_redirects=False).status_code, 401)
 
