@@ -71,9 +71,9 @@ class PcRuntime:
         return AuthContext(sub=session.account_id)
 
 
-def create_app(runtime=None, *, church_membership_connect=None):
+def create_app(runtime=None, *, trusted_hosts=None, church_membership_connect=None):
     app = FastAPI(title='JesusLife PC Auth0 development PoC', debug=False)
-    app.add_middleware(TrustedHostMiddleware, allowed_hosts=['127.0.0.1', 'testserver'])
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=trusted_hosts or ['127.0.0.1', 'testserver'])
     app.state.auth_runtime = runtime
     from app.core.ab_acceptance import AcceptanceRuns, check_records
     from threading import Lock
@@ -123,6 +123,8 @@ def create_app(runtime=None, *, church_membership_connect=None):
 
     from app.core.mobile_routes import install_mobile
     install_mobile(app, current)
+    from app.core.life_diary_login import install_life_diary
+    install_life_diary(app, current)
 
     @app.get('/health')
     def health():

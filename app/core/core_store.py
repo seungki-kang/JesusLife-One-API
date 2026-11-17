@@ -44,6 +44,13 @@ def stamp(value):
 
 
 class CoreStore:
+    integrity_error = pymysql.IntegrityError
+    retryable_write_error = pymysql.OperationalError
+
+    @staticmethod
+    def is_write_conflict(error):
+        return error.args[0] in (1205, 1213)
+
     def __init__(self, encryption_key, hmac_key, connector=connect_core):
         self._cipher, self._hmac, self._connect = AESGCM(encryption_key), hmac_key, connector
 
@@ -102,20 +109,20 @@ class CoreStore:
         row['verifier'] = self.decrypt(row['verifier_ciphertext'], digest(state))
         return row
 
-    def complete_login(self, *, state, browser, token, raw_token, now):
+    def complete_login(self, *, state, browser, token, raw_token, now, app_id=None, handoff=None):
         # Only a verified, server-exchanged token may enter this internal method.
         if not hmac.compare_digest(hmac.digest(self._hmac, raw_token.encode('ascii'), 'sha256'), token.fingerprint):
             raise denied()
         for attempt in range(3):
             try:
-                return self._complete(state, browser, token, raw_token, now)
+                return self._complete(state, browser, token, raw_token, now, app_id=app_id, handoff=handoff)
             except HTTPException as error:
                 # Retry only explicitly tagged transaction conflicts, never arbitrary storage errors.
                 if error.status_code != 409 or attempt == 2:
                     raise
         raise denied()
 
-    def _complete(self, state, browser, token, raw_token, now):
+    def _complete(self, state, browser, token, raw_token, now, *, app_id=None, handoff=None):
         with self.transaction() as connection, connection.cursor() as cursor:
             cursor.execute('SELECT * FROM login_transactions WHERE state_hash=%s FOR UPDATE', (digest(state),))
             login = cursor.fetchone()
@@ -133,10 +140,10 @@ class CoreStore:
                     cursor.execute('INSERT INTO accounts (account_id,created_at) VALUES (%s,%s)', (account, utc(now)))
                     cursor.execute('INSERT INTO external_identities (issuer,provider_subject,account_id,created_at) '
                                    'VALUES (%s,%s,%s,%s)', (issuer, subject, account, utc(now)))
-                except pymysql.IntegrityError:
+                except self.integrity_error:
                     raise HTTPException(409, 'Authentication conflict') from None
-                except pymysql.OperationalError as error:
-                    if error.args[0] in (1205, 1213):
+                except self.retryable_write_error as error:
+                    if self.is_write_conflict(error):
                         raise HTTPException(409, 'Authentication conflict') from None
                     raise
             cursor.execute('SELECT * FROM accounts WHERE account_id=%s FOR UPDATE', (account,))
@@ -144,19 +151,26 @@ class CoreStore:
             if owner['status'] != 'active':
                 raise denied()
             sid, cookie, csrf = str(uuid4()), secrets.token_urlsafe(32), secrets.token_urlsafe(32)
-            cursor.execute('INSERT INTO app_sessions (session_id,account_id,issuer,provider_subject,client_id,'
-                           'cookie_hash,csrf_hash,account_security_version,created_at,expires_at) '
-                           'VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)',
-                           (sid, account, issuer, subject, token.client_id.encode(), digest(cookie), digest(csrf),
-                            owner['security_version'], utc(now), utc(token.expires_at)))
+            columns = ('session_id,account_id,issuer,provider_subject,client_id,'
+                       'cookie_hash,csrf_hash,account_security_version,created_at,expires_at')
+            values = (sid, account, issuer, subject, token.client_id.encode(), digest(cookie), digest(csrf),
+                      owner['security_version'], utc(now), utc(token.expires_at))
+            if app_id is not None:
+                columns += ',app_id'
+                values += (app_id.encode(),)
+            cursor.execute('INSERT INTO app_sessions (' + columns + ') VALUES ('
+                           + ','.join(['%s'] * len(values)) + ')', values)
             try:
                 cursor.execute('INSERT INTO session_access_tokens (fingerprint,fingerprint_key_version,session_id,'
                                'jwt_ciphertext,encryption_key_version,issued_at,expires_at) VALUES (%s,1,%s,%s,1,%s,%s)',
                                (token.fingerprint, sid, self.encrypt(raw_token, token.fingerprint), utc(now), utc(token.expires_at)))
-            except pymysql.IntegrityError:
+            except self.integrity_error:
                 raise denied() from None
             cursor.execute("UPDATE login_transactions SET status='completed',consumed_at=%s WHERE state_hash=%s",
                            (utc(now), digest(state)))
+            if handoff is not None:
+                # A failed handoff rolls back the session, token and completion together.
+                return handoff(connection, cookie, UUID(account))
             return cookie, csrf, UUID(account)
 
     def lookup(self, fingerprint):

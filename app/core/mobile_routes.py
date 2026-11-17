@@ -64,6 +64,8 @@ def install_mobile(app, current):
             raise denied()
         credential = authorization[7:]
         raw, row = runtime.store.cookie_token(credential, now=runtime.now())
+        if row.get('app_id') is not None:
+            raise denied()
         token = runtime.provider.verify_access(raw, now=runtime.now())
         session = runtime.store.lookup(token.fingerprint)
         if session is None:
@@ -91,6 +93,7 @@ def install_mobile(app, current):
         state = request.query_params.get('state')
         if not state or not re.fullmatch(r'[A-Za-z0-9_-]{43}', state) or len(request.query_params) != 1:
             raise denied()
+        runtime.store.mobile_binding(state, app_id=None, client_id=None, return_uri=RETURN_URI, now=runtime.now())
         browser, nonce, verifier = [secrets.token_urlsafe(32) for _ in range(3)]
         runtime.store.bind_browser(state, browser, now=runtime.now())
         client = next(iter(runtime.config.policy.client_ids))
@@ -114,6 +117,7 @@ def install_mobile(app, current):
                 or not query['code'] or len(query['code']) > 4096):
             raise denied()
         state, browser = query['state'], request.cookies.get('jl_mobile_login')
+        runtime.store.mobile_binding(state, app_id=None, client_id=None, return_uri=RETURN_URI, now=runtime.now())
         login = runtime.store.claim_login(state=state, browser=browser, now=runtime.now())
         if (login['redirect_uri'].decode() != CALLBACK
                 or login['client_id'].decode() not in runtime.config.policy.client_ids):
