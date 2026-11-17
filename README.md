@@ -1,5 +1,9 @@
 # JesusLife One API
 
+PostgreSQL 역할 분리·RLS 합성 검증과 롤백·복구 절차는
+[로컬 PostgreSQL RLS 기반](docs/local-postgres-rls.md)을 참조하세요.
+실제 API 연결과 원격 적용은 보류 상태입니다.
+
 현재 FastAPI 시작 골격이며 앱 버전은 0.1.0입니다.
 
 ## 현재 기능
@@ -41,6 +45,34 @@ override와 합성 UUID로 401·403·동일 소유자 통과를 검증합니다.
 이 상태 경로는 DB나 외부 서비스의 가용성을 검사하지 않습니다.
 
 ## 로컬 실행
+
+PostgreSQL 설정 계약은 `app/core/postgres_settings.py`의
+`load_postgres_runtime_settings()`와 `load_postgres_migration_settings()`로 분리합니다.
+각각 `JESUSLIFE_POSTGRES_RUNTIME_DSN`, `JESUSLIFE_POSTGRES_MIGRATION_DSN`을
+프로세스 환경(또는 명시적으로 전달한 매핑)에서 검증하며 `.env`를 자동으로 읽지 않습니다.
+`app/core/postgres.py`의 `connect_runtime()`과 `connect_migration()`을 명시적으로
+호출할 때만 독점 연결을 생성합니다. import·FastAPI 시작·기존 요청에는 연결하지 않습니다.
+`psycopg[binary]==3.3.8`을 사용하며 Python 3.14 Windows binary wheel을 검증합니다.
+두 함수는 기존 설정 검증 후 `connect_timeout=5`, 목적별 `application_name`
+(`jesuslife_runtime`, `jesuslife_migration`), UTC 세션을 적용합니다.
+기본 `autocommit=False`를 유지하며 반환 연결의 transaction·종료는 호출자 책임입니다.
+연결 오류는 고정 `PostgresConnectionError`로 변환합니다. 반환 연결로 수행하는 업무
+쿼리·commit 오류도 호출 계층에서 비밀정보 없는 오류로 변환해야 합니다.
+`probe_runtime()`은 명시적 호출 시 `SELECT 1`만 실행하고 commit 없이 cursor와 연결을
+닫습니다. 쿼리·정리 실패도 고정 오류로 처리하며 자동 재시도는 없습니다.
+실제 Supabase 접속과 migration 실행은 검증하지 않았습니다. pool은 배포 형태와
+session/direct mode 확정 후 별도 작업입니다.
+runtime 환경에는 runtime 자격증명만, 별도 migration 환경에는 migration 자격증명만
+제공합니다. 두 값이 함께 있으면 같은 서버·포트·DB·사용자 조합은 거부합니다.
+이는 실제 DB 역할·권한 분리 검증을 대신하지 않습니다.
+URI는 `postgresql` 또는 `postgres` 스킴, 사용자·비밀번호·호스트·DB를 요구합니다.
+쿼리 옵션은 `sslmode` 하나만 허용하며 원격은 `require`, `verify-ca`, `verify-full`을
+요구합니다. TLS 생략은 정확한 loopback 호스트에서만 허용합니다.
+설정 객체의 repr/str과 고정 오류 메시지는 DSN을 숨기지만 `.dsn`은 비밀값이므로
+직렬화·로그 출력하지 않습니다. `.env.example`은 합성 placeholder입니다.
+**Flutter에 DSN을 넣지 않습니다.** Flutter → FastAPI → PostgreSQL 경계를 유지하며
+실제 비밀정보 저장 위치·역할 생성·연결은
+[전환 결정서](docs/architecture/postgres-transition-decision.md)의 후속 승인 범위입니다.
 
 현재 보존된 .venv는 Python 3.14.8 환경입니다. 프로젝트 루트에서 PowerShell로 실행합니다.
 

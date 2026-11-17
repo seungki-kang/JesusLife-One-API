@@ -37,7 +37,7 @@ class PcRuntime:
                 raise HTTPException(403, 'Access denied')
         return request.headers['x-csrf-token']
 
-    def identity(self, request, *, product=True):
+    def identity(self, request, *, product=True, required_scope=None):
         authorization = request.headers.get('authorization')
         if authorization is not None:
             if not authorization.startswith('Bearer '):
@@ -65,11 +65,13 @@ class PcRuntime:
                 required = 'neorang-narang:read' if request.method in ('GET', 'HEAD') else 'neorang-narang:write'
                 if required not in token.scopes or not session.consent_active:
                     raise HTTPException(403, 'Access denied')
+        if required_scope is not None and required_scope not in token.scopes:
+            raise HTTPException(403, 'Access denied')
         from app.core.auth import AuthContext
         return AuthContext(sub=session.account_id)
 
 
-def create_app(runtime=None, *, trusted_hosts=None):
+def create_app(runtime=None, *, trusted_hosts=None, church_membership_connect=None):
     app = FastAPI(title='JesusLife PC Auth0 development PoC', debug=False)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=trusted_hosts or ['127.0.0.1', 'testserver'])
     app.state.auth_runtime = runtime
@@ -78,6 +80,19 @@ def create_app(runtime=None, *, trusted_hosts=None):
     acceptance = AcceptanceRuns()
     acceptance_busy = Lock()
     app.include_router(router)
+
+    if church_membership_connect is not None:
+        from app.modules.churchos.router import create_membership_router
+
+        def church_identity(request: Request):
+            active_runtime = request.app.state.auth_runtime
+            if active_runtime is None:
+                raise denied()
+            return active_runtime.identity(
+                request, product=False, required_scope='churchos:membership:read',
+            )
+
+        app.include_router(create_membership_router(church_identity, church_membership_connect))
 
     @app.middleware('http')
     async def headers(request, call_next):
@@ -115,8 +130,7 @@ def create_app(runtime=None, *, trusted_hosts=None):
     def health():
         return {'status': 'ok', 'service': 'jesuslife-pc-poc'}
 
-    @app.get('/auth/poc/login')
-    def login():
+    def begin_login(*, churchos=False):
         service = current()
         state, browser, nonce, verifier = [secrets.token_urlsafe(32) for _ in range(4)]
         client = next(iter(service.config.policy.client_ids))
@@ -125,13 +139,23 @@ def create_app(runtime=None, *, trusted_hosts=None):
         from app.core.auth0_poc import pkce_challenge
         query = urlencode({'response_type': 'code', 'client_id': client, 'redirect_uri': CALLBACK,
                            'audience': service.config.policy.audience,
-                           'scope': 'openid neorang-narang:read neorang-narang:write',
+                           'scope': 'openid neorang-narang:read neorang-narang:write'
+                           + (' churchos:membership:read' if churchos else ''),
                            'state': state, 'nonce': nonce, 'code_challenge': pkce_challenge(verifier),
                            'code_challenge_method': 'S256', 'prompt': 'login'})
         response = RedirectResponse(service.config.policy.issuer + 'authorize?' + query, status_code=303)
         response.set_cookie('jl_pc_login', browser, httponly=True, samesite='lax', max_age=300,
                             path='/api/v1/auth/callback')
         return response
+
+    @app.get('/auth/poc/login')
+    def login():
+        return begin_login()
+
+    if church_membership_connect is not None:
+        @app.get('/auth/poc/login/churchos')
+        def churchos_login():
+            return begin_login(churchos=True)
 
     @app.get('/api/v1/auth/callback/web')
     def callback(request: Request):
@@ -293,10 +317,18 @@ window.addEventListener('pageshow',event=>{if(event.persisted)location.reload();
 
 def configured_app():
     try:
-        config = validate(dotenv_values(PATH, interpolate=False))
-        return create_app(PcRuntime(config))
+        values = dotenv_values(PATH, interpolate=False)
+        config = validate(values)
+        runtime = PcRuntime(config)
     except Exception:
         return create_app()
+    # A bad optional setting cannot disable or alter the existing login flow.
+    from scripts.churchos_pc_settings import membership_connector
+    try:
+        connect = membership_connector(values)
+    except Exception:
+        connect = None
+    return create_app(runtime, church_membership_connect=connect)
 
 
 app = configured_app()
