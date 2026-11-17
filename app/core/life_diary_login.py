@@ -16,6 +16,8 @@ APP_ID = 'life_diary'
 RETURN_URI = 'jesuslife-life-diary-poc://auth/complete/android'
 CALLBACK = 'http://127.0.0.1:8000/api/v1/auth/callback/life-diary/android'
 PREFIX = '/api/v1/mobile/life-diary'
+DEVELOPMENT_CALLBACK = 'https://unwary-founder-peculiar.ngrok-free.dev/api/v1/auth/callback/life-diary/android'
+COMPLETE = '/api/v1/auth/callback/life-diary/android/complete'
 
 
 @dataclass(frozen=True)
@@ -26,6 +28,7 @@ class Registration:
     app_id: str = APP_ID
     return_uri: str = RETURN_URI
     scope: str = 'openid'
+    callback_uri: str = CALLBACK
 
 
 class AppStart(Start):
@@ -39,6 +42,8 @@ class AppExchange(Exchange):
 
 
 def install_life_diary(app, current):
+    from .life_diary_dev_relay import DevelopmentRelay
+    relay = DevelopmentRelay()
     from app.modules.neorang_narang.router import SafeValidationRoute
     routes = APIRouter(route_class=SafeValidationRoute)
 
@@ -49,6 +54,7 @@ def install_life_diary(app, current):
         if not registration or not registration.enabled or runtime is None:
             raise HTTPException(503, 'Authentication unavailable')
         if (registration.app_id != APP_ID or registration.return_uri != RETURN_URI
+                or registration.callback_uri not in (CALLBACK, DEVELOPMENT_CALLBACK)
                 or registration.scope != 'openid' or not registration.client_id
                 or registration.client_id in parent.config.policy.client_ids
                 or runtime.config.policy.client_ids != frozenset({registration.client_id})
@@ -88,9 +94,11 @@ def install_life_diary(app, current):
         browser, nonce, verifier = [secrets.token_urlsafe(32) for _ in range(3)]
         runtime.store.bind_browser(state, browser, now=runtime.now())
         runtime.store.begin_login(state=state, browser=browser, nonce=nonce, verifier=verifier,
-            client_id=registration.client_id, redirect_uri=CALLBACK, now=runtime.now())
+            client_id=registration.client_id, redirect_uri=registration.callback_uri, now=runtime.now())
+        if registration.callback_uri == DEVELOPMENT_CALLBACK:
+            relay.begin(state, browser, runtime.now())
         query = urlencode({'response_type': 'code', 'client_id': registration.client_id,
-            'redirect_uri': CALLBACK, 'audience': runtime.config.policy.audience,
+            'redirect_uri': registration.callback_uri, 'audience': runtime.config.policy.audience,
             'scope': registration.scope, 'state': state, 'nonce': nonce,
             'code_challenge': pkce_challenge(verifier), 'code_challenge_method': 'S256', 'prompt': 'login'})
         response = RedirectResponse(runtime.config.policy.issuer+'authorize?'+query, 303)
@@ -112,12 +120,41 @@ def install_life_diary(app, current):
                 or query.get('error') or not query['code'] or len(query['code']) > 4096):
             raise denied()
         state, browser = query['state'], request.cookies.get('jl_ld_login')
-        binding(runtime, registration, state)
-        login = runtime.store.claim_login(state=state, browser=browser, now=runtime.now())
-        if (login['client_id'] != registration.client_id.encode() or login['redirect_uri'] != CALLBACK.encode()):
+        if not re.fullmatch(r'[A-Za-z0-9_-]{43}', state):
             raise denied()
-        raw, token = runtime.provider.exchange(code=query['code'], verifier=login['verifier'],
-            nonce_hash=login['nonce_hash'], now=runtime.now(), redirect_uri=CALLBACK)
+        binding(runtime, registration, state)
+        if registration.callback_uri == DEVELOPMENT_CALLBACK:
+            if request.url.hostname != 'unwary-founder-peculiar.ngrok-free.dev':
+                raise denied()
+            ticket = relay.receive(state, query['code'], runtime.now())
+            return RedirectResponse('http://127.0.0.1:8000'+COMPLETE+'?'+urlencode({'ticket': ticket}), 303)
+        return finish(runtime, registration, state, browser, query['code'])
+
+    @routes.get(COMPLETE)
+    def complete(request: Request):
+        runtime, registration = service()
+        ticket = request.query_params.get('ticket', '')
+        if (registration.callback_uri != DEVELOPMENT_CALLBACK
+                or request.url.netloc != '127.0.0.1:8000'
+                or len(request.query_params.multi_items()) != 1
+                or not re.fullmatch(r'[A-Za-z0-9_-]{43}', ticket)):
+            raise denied()
+        browser = request.cookies.get('jl_ld_login')
+        state, code = relay.consume(ticket, browser, runtime.now())
+        binding(runtime, registration, state)
+        return finish(runtime, registration, state, browser, code)
+
+    def finish(runtime, registration, state, browser, authorization_code):
+        from .auth_diagnostics import stage
+
+        with stage('ld_claim_login'):
+            login = runtime.store.claim_login(state=state, browser=browser, now=runtime.now())
+        with stage('ld_registration_binding'):
+            if (login['client_id'] != registration.client_id.encode() or login['redirect_uri'] != registration.callback_uri.encode()):
+                raise denied()
+        with stage('ld_provider_exchange'):
+            raw, token = runtime.provider.exchange(code=authorization_code, verifier=login['verifier'],
+                nonce_hash=login['nonce_hash'], now=runtime.now(), redirect_uri=registration.callback_uri)
         if token.client_id != registration.client_id or 'openid' not in token.scopes:
             raise denied()
         code = secrets.token_urlsafe(32)

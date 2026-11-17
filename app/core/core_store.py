@@ -44,6 +44,13 @@ def stamp(value):
 
 
 class CoreStore:
+    integrity_error = pymysql.IntegrityError
+    retryable_write_error = pymysql.OperationalError
+
+    @staticmethod
+    def is_write_conflict(error):
+        return error.args[0] in (1205, 1213)
+
     def __init__(self, encryption_key, hmac_key, connector=connect_core):
         self._cipher, self._hmac, self._connect = AESGCM(encryption_key), hmac_key, connector
 
@@ -133,10 +140,10 @@ class CoreStore:
                     cursor.execute('INSERT INTO accounts (account_id,created_at) VALUES (%s,%s)', (account, utc(now)))
                     cursor.execute('INSERT INTO external_identities (issuer,provider_subject,account_id,created_at) '
                                    'VALUES (%s,%s,%s,%s)', (issuer, subject, account, utc(now)))
-                except pymysql.IntegrityError:
+                except self.integrity_error:
                     raise HTTPException(409, 'Authentication conflict') from None
-                except pymysql.OperationalError as error:
-                    if error.args[0] in (1205, 1213):
+                except self.retryable_write_error as error:
+                    if self.is_write_conflict(error):
                         raise HTTPException(409, 'Authentication conflict') from None
                     raise
             cursor.execute('SELECT * FROM accounts WHERE account_id=%s FOR UPDATE', (account,))
@@ -157,7 +164,7 @@ class CoreStore:
                 cursor.execute('INSERT INTO session_access_tokens (fingerprint,fingerprint_key_version,session_id,'
                                'jwt_ciphertext,encryption_key_version,issued_at,expires_at) VALUES (%s,1,%s,%s,1,%s,%s)',
                                (token.fingerprint, sid, self.encrypt(raw_token, token.fingerprint), utc(now), utc(token.expires_at)))
-            except pymysql.IntegrityError:
+            except self.integrity_error:
                 raise denied() from None
             cursor.execute("UPDATE login_transactions SET status='completed',consumed_at=%s WHERE state_hash=%s",
                            (utc(now), digest(state)))

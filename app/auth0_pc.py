@@ -69,9 +69,9 @@ class PcRuntime:
         return AuthContext(sub=session.account_id)
 
 
-def create_app(runtime=None):
+def create_app(runtime=None, *, trusted_hosts=None):
     app = FastAPI(title='JesusLife PC Auth0 development PoC', debug=False)
-    app.add_middleware(TrustedHostMiddleware, allowed_hosts=['127.0.0.1', 'testserver'])
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=trusted_hosts or ['127.0.0.1', 'testserver'])
     app.state.auth_runtime = runtime
     from app.core.ab_acceptance import AcceptanceRuns, check_records
     from threading import Lock
