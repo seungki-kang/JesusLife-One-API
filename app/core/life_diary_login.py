@@ -41,7 +41,7 @@ class AppExchange(Exchange):
     client_id: str
 
 
-def install_life_diary(app, current):
+def install_life_diary(app, current, *, backup_router_factory=None):
     from .life_diary_dev_relay import DevelopmentRelay
     relay = DevelopmentRelay()
     from app.modules.neorang_narang.router import SafeValidationRoute
@@ -211,4 +211,10 @@ def install_life_diary(app, current):
                       (utc(runtime.now()), row['session_id'], APP_ID.encode(), row['client_id']))
         return Response(status_code=204)
 
+    app.state.life_diary_backup_owner = lambda request: identity(request)[2].account_id
     app.include_router(routes)
+    if backup_router_factory is not None:
+        def backup_owner(request):
+            return identity(request)[2].account_id
+
+        app.include_router(backup_router_factory(backup_owner))
