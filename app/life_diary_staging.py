@@ -85,9 +85,16 @@ def create_app(environ=None):
 
     def connect():
         connection = connect_runtime(postgres_environment)
-        if connection.info.user != 'jl_ld_auth_runtime':
+        try:
+            # Supavisor adds the project reference to the login name. Check
+            # PostgreSQL's effective role and return an idle connection.
+            with connection.transaction():
+                role = connection.execute('SELECT current_user').fetchone()
+                if role != ('jl_ld_auth_runtime',):
+                    raise PostgresConnectionError('Unexpected Life Diary runtime role')
+        except (PostgresConnectionError, PostgresDriverError):
             connection.close()
-            raise PostgresConnectionError('Unexpected Life Diary runtime role')
+            raise PostgresConnectionError('Life Diary runtime role check failed') from None
         return connection
 
     def connect_backup():
