@@ -2,7 +2,7 @@
 from dataclasses import dataclass
 import re
 import secrets
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Request, Response
@@ -18,6 +18,18 @@ CALLBACK = 'http://127.0.0.1:8000/api/v1/auth/callback/life-diary/android'
 PREFIX = '/api/v1/mobile/life-diary'
 DEVELOPMENT_CALLBACK = 'https://unwary-founder-peculiar.ngrok-free.dev/api/v1/auth/callback/life-diary/android'
 COMPLETE = '/api/v1/auth/callback/life-diary/android/complete'
+CALLBACK_PATH = '/api/v1/auth/callback/life-diary/android'
+
+
+def cloud_callback(public_origin):
+    origin = urlsplit(public_origin)
+    if (origin.scheme != 'https'
+            or not origin.hostname
+            or not re.fullmatch(r'[a-z0-9]+(?:[a-z0-9.-]*[a-z0-9])?', origin.hostname)
+            or '.' not in origin.hostname
+            or public_origin != f'https://{origin.hostname}'):
+        raise ValueError('Life Diary requires a canonical HTTPS origin')
+    return public_origin + CALLBACK_PATH
 
 
 @dataclass(frozen=True)
@@ -41,7 +53,10 @@ class AppExchange(Exchange):
     client_id: str
 
 
-def install_life_diary(app, current, *, backup_router_factory=None):
+def install_life_diary(app, current, *, backup_router_factory=None, public_origin=None):
+    https_callback = cloud_callback(public_origin) if public_origin is not None else None
+    allowed_callbacks = (https_callback,) if https_callback else (CALLBACK, DEVELOPMENT_CALLBACK)
+    authorize_origin = public_origin or 'http://127.0.0.1:8000'
     from .life_diary_dev_relay import DevelopmentRelay
     relay = DevelopmentRelay()
     from app.modules.neorang_narang.router import SafeValidationRoute
@@ -54,7 +69,7 @@ def install_life_diary(app, current, *, backup_router_factory=None):
         if not registration or not registration.enabled or runtime is None:
             raise HTTPException(503, 'Authentication unavailable')
         if (registration.app_id != APP_ID or registration.return_uri != RETURN_URI
-                or registration.callback_uri not in (CALLBACK, DEVELOPMENT_CALLBACK)
+                or registration.callback_uri not in allowed_callbacks
                 or registration.scope != 'openid' or not registration.client_id
                 or registration.client_id in parent.config.policy.client_ids
                 or runtime.config.policy.client_ids != frozenset({registration.client_id})
@@ -82,7 +97,7 @@ def install_life_diary(app, current, *, backup_router_factory=None):
             return_uri=registration.return_uri, app_id=registration.app_id,
             client_id=registration.client_id, now=runtime.now())
         return {'transaction': transaction, 'authorize_url':
-                'http://127.0.0.1:8000'+PREFIX+'/authorize?'+urlencode({'state': state})}
+                authorize_origin+PREFIX+'/authorize?'+urlencode({'state': state})}
 
     @routes.get(PREFIX + '/authorize')
     def authorize(request: Request):
@@ -95,7 +110,7 @@ def install_life_diary(app, current, *, backup_router_factory=None):
         runtime.store.bind_browser(state, browser, now=runtime.now())
         runtime.store.begin_login(state=state, browser=browser, nonce=nonce, verifier=verifier,
             client_id=registration.client_id, redirect_uri=registration.callback_uri, now=runtime.now())
-        if registration.callback_uri == DEVELOPMENT_CALLBACK:
+        if https_callback is None and registration.callback_uri == DEVELOPMENT_CALLBACK:
             relay.begin(state, browser, runtime.now())
         query = urlencode({'response_type': 'code', 'client_id': registration.client_id,
             'redirect_uri': registration.callback_uri, 'audience': runtime.config.policy.audience,
@@ -103,10 +118,10 @@ def install_life_diary(app, current, *, backup_router_factory=None):
             'code_challenge': pkce_challenge(verifier), 'code_challenge_method': 'S256', 'prompt': 'login'})
         response = RedirectResponse(runtime.config.policy.issuer+'authorize?'+query, 303)
         response.set_cookie('jl_ld_login', browser, httponly=True, samesite='lax', max_age=300,
-                            path='/api/v1/auth/callback/life-diary/android')
+                            path=CALLBACK_PATH, secure=https_callback is not None)
         return response
 
-    @routes.get('/api/v1/auth/callback/life-diary/android')
+    @routes.get(CALLBACK_PATH)
     def callback(request: Request):
         runtime, registration = service()
         query = request.query_params
@@ -123,7 +138,7 @@ def install_life_diary(app, current, *, backup_router_factory=None):
         if not re.fullmatch(r'[A-Za-z0-9_-]{43}', state):
             raise denied()
         binding(runtime, registration, state)
-        if registration.callback_uri == DEVELOPMENT_CALLBACK:
+        if https_callback is None and registration.callback_uri == DEVELOPMENT_CALLBACK:
             if request.url.hostname != 'unwary-founder-peculiar.ngrok-free.dev':
                 raise denied()
             ticket = relay.receive(state, query['code'], runtime.now())
@@ -134,7 +149,7 @@ def install_life_diary(app, current, *, backup_router_factory=None):
     def complete(request: Request):
         runtime, registration = service()
         ticket = request.query_params.get('ticket', '')
-        if (registration.callback_uri != DEVELOPMENT_CALLBACK
+        if (https_callback is not None or registration.callback_uri != DEVELOPMENT_CALLBACK
                 or request.url.netloc != '127.0.0.1:8000'
                 or len(request.query_params.multi_items()) != 1
                 or not re.fullmatch(r'[A-Za-z0-9_-]{43}', ticket)):
@@ -165,7 +180,7 @@ def install_life_diary(app, current, *, backup_router_factory=None):
         transaction, uri = runtime.store.complete_login(state=state, browser=browser, token=token,
             raw_token=raw, now=runtime.now(), app_id=registration.app_id, handoff=handoff)
         response = RedirectResponse(uri+'?'+urlencode({'transaction': transaction, 'code': code}), 303)
-        response.delete_cookie('jl_ld_login', path='/api/v1/auth/callback/life-diary/android')
+        response.delete_cookie('jl_ld_login', path=CALLBACK_PATH, secure=https_callback is not None)
         return response
 
     def identity(request):

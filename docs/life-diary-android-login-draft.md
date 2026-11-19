@@ -92,3 +92,27 @@ SQLite 검증은 실제 MySQL 잠금·DDL·권한·업그레이드·복구를 �
 NOT_RUN: 실제 Auth0/DB, 비밀 조회, migration 실행·업그레이드·백업·복원 리허설,
 Flutter, Android 실기기, 배포, commit/push. 실제 활성화와 독립 003 결합 검증은
 후속 검토 범위다.
+
+### 완료 일기 백업용 PostgreSQL 검증 스키마
+
+완료 일기 검증 서버는 [별도 SQL 파일](../migrations/postgres/rehearsal/005_life_diary_completed_backup.sql)을 읽어 새 임시 DB에 한 트랜잭션으로 적용한다. 동의 세대, 재요청, 충돌, 철회 시 백업 삭제 규칙은 기존 검증 서버 SQL과 동일하다. 이 파일은 로컬 검증 전용이며, Supabase 적용과 공통 FastAPI 연결은 별도로 검증한다.
+
+완료 일기 백업 라우터는 인증된 계정 ID를 반환하는 함수와 PostgreSQL 연결 함수를 받아 설치한다. 로컬 검증 서버에서 이 라우터를 사용한다. 클라우드 서버에 설치하려면 검증용 HTTPS 인증 계약과 DB 마이그레이션이 필요하다.
+
+공통 One API의 `app.main.create_app`에는 인증된 사용자 ID를 확인하는 함수와 PostgreSQL 연결 함수를 명시적으로 넘겨 백업 라우터를 등록할 수 있다. 기본 `app.main:app`에는 백업 라우터가 등록되지 않는다. 로컬 HTTP 테스트에서 기존 OpenAPI 경로 보존, 설정 누락 거부, 백업 경로 4개 등록, 비인증 요청의 DB 접근 전 차단 및 상태 조회를 확인했다. 실제 Auth0 및 Supabase 동작은 미검증이다.
+
+생명일기 로그인 설치 함수는 검증 서버의 HTTPS 오리진을 명시적으로 받을 수 있다. 이 경우 Auth0 콜백과 브라우저 로그인 URL은 같은 설정에서 구성하고, 로그인 쿠키에는 Secure를 붙인다. 배포 환경에서 Auth0 등록과 앱 설정 검증이 필요하다.
+
+### HTTPS 검증 서버 실행
+
+검증 서버의 환경변수에 `LIFE_DIARY_STAGING_ENABLED=1`, `LIFE_DIARY_PUBLIC_ORIGIN`, `AUTH0_ISSUER`, `AUTH0_AUDIENCE`, `AUTH0_CORE_CLIENT_ID`, `LD_AUTH0_CLIENT_ID`, `LD_AUTH0_CLIENT_SECRET`, `CORE_TOKEN_HMAC_KEY`, `CORE_TOKEN_ENCRYPTION_KEY`, `JESUSLIFE_POSTGRES_RUNTIME_DSN`을 구성한다. 앱에는 공개 서버 주소와 생명일기 공개 클라이언트 ID만 전달한다. DB는 `verify-full` 인증서 검증, 전용 `jl_ld_auth_runtime` 사용자, 인증 및 백업 스키마 적용이 필요하다. 현재 사용자명 검사는 직접 접속을 전제로 한다. 공개 URL과 동일한 호스트를 TLS 프록시가 전달해야 한다.
+
+```bash
+python -m uvicorn app.life_diary_staging:create_app --factory --host 0.0.0.0 --no-access-log
+```
+
+Auth0 콜백은 검증 서버 URL에 `/api/v1/auth/callback/life-diary/android`를 붙여 등록한다. Auth0와 PostgreSQL을 사용하는 실행 검증은 아직 수행하지 않았다.
+
+검증 DB에는 생명일기 인증 스키마 `004_life_diary_auth.sql`과 [완료 일기 백업 스키마](../migrations/postgres/staging/005_life_diary_completed_backup.sql)가 필요하다. 기존 인증 스키마가 있다면 현재 스키마와 버전·권한을 확인한 후 변경 범위를 정한다. 새 백업 스키마는 마이그레이션 계정으로 단일 트랜잭션에서 적용한다. `GET /ready`는 실행 계정으로 인증 버전, 백업 테이블 열과 DB 함수 실행 권한을 읽기 전용으로 확인한다. HTTP 204는 이 조회가 성공했음을, 503은 저장소 준비가 확인되지 않았음을 의미한다.
+
+2026-11-19 확인: Supabase 검증 프로젝트에서 완료 일기 백업 테이블 두 개의 존재, RLS 활성화, `jl_ld_auth_runtime` 대상 정책 등록을 SQL 결과로 확인했다. 검증용 005 파일에 동일한 RLS 설정을 반영했다. 적용된 프로젝트에서 005를 다시 실행할 필요는 없다. 실제 실행 역할로 접속한 검증 서버의 /ready 응답과 앱 백업·복구는 미검증이다.
