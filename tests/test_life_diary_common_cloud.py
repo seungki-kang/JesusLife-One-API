@@ -51,9 +51,9 @@ class LifeDiaryCloudSettingsTest(unittest.TestCase):
         target_dir = self.root / 'profile'
         target = target_dir / 'settings.env'
         with patch.object(cli,'COMMON_SETTINGS',common),patch.object(cli,'DIRECTORY',target_dir), \
-                patch.object(cli,'SETTINGS',target),patch('pymysql.connect') as mysql:
+                patch.object(cli,'SETTINGS',target), patch.object(cli,'dotenv_values',return_value=source), patch('pymysql.connect') as mysql:
             cli.prepare()
-            config = dotenv_values(target,interpolate=False)
+            config = {key: json.loads(value) for key, value in (line.split('=', 1) for line in target.read_text(encoding='utf-8').splitlines() if line)}
             self.assertEqual(config[ENABLED],'0')
             self.assertEqual(config['AUTH0_CLIENT_ID'],'')
             self.assertEqual(config['AUTH0_CLIENT_SECRET'],'')

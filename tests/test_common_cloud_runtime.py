@@ -105,24 +105,49 @@ class CloudSettingsTest(unittest.TestCase):
         self.assertNotIn('synthetic-secret', str(error.exception))
         self.assertIsNone(error.exception.__context__)
 
+
     def test_prepare_reuses_only_auth_and_pooler_allowlist_and_never_overwrites(self):
-        from dotenv import dotenv_values
         import json
-        old_auth = self.root / '.env.auth0-pc'
-        old_auth.write_text('\n'.join(k+'='+json.dumps(v) for k,v in self.values.items() if k.startswith('AUTH0_'))
-                            + '\nCORE_DB_PASSWORD="legacy-db-secret-not-to-copy"\n')
-        pg = self.root / '.env.churchos-supabase-dev'
-        pg.mkdir()
-        (pg/'settings.env').write_text('\n'.join(k+'='+json.dumps(self.values[k])
-            for k in ('POOLER_HOST','PROJECT_REF','SSLROOTCERT')))
-        directory = self.root / '.env.common-auth-cloud'
+
+        old_auth = {
+            key: value for key, value in self.values.items()
+            if key.startswith('AUTH0_')
+        }
+        old_auth['CORE_DB_PASSWORD'] = 'legacy-db-secret-not-to-copy'
+        old_pg = {
+            key: self.values[key]
+            for key in ('POOLER_HOST', 'PROJECT_REF', 'SSLROOTCERT')
+        }
+        old_pg['CORE_DB_PASSWORD'] = 'legacy-db-secret-not-to-copy'
+        directory = self.root / 'synthetic-common-profile'
         target = directory / 'settings.env'
-        with patch.object(cli, 'ROOT', self.root), patch.object(cli, 'DIRECTORY', directory), \
-                patch.object(cli, 'SETTINGS', target), patch('pymysql.connect') as mysql:
+
+        def synthetic_values(path, *, interpolate):
+            self.assertFalse(interpolate)
+            if path == self.root / '.env.auth0-pc':
+                return old_auth.copy()
+            if path == self.root / '.env.churchos-supabase-dev/settings.env':
+                return old_pg.copy()
+            raise AssertionError('Unexpected configuration source')
+
+        with patch.object(cli, 'ROOT', self.root), \
+                patch.object(cli, 'DIRECTORY', directory), \
+                patch.object(cli, 'SETTINGS', target), \
+                patch.object(cli, 'dotenv_values', side_effect=synthetic_values), \
+                patch('pymysql.connect') as mysql:
             cli.prepare(reuse_dev_settings=True)
-            data = target.read_text()
-            parsed = dotenv_values(target, interpolate=False)
+            data = target.read_text(encoding='utf-8')
+            parsed = {
+                key: json.loads(value)
+                for key, value in (
+                    line.split('=', 1) for line in data.splitlines() if line
+                )
+            }
             self.assertFalse(validate(parsed).enabled)
+            for key in ('AUTH0_ISSUER', 'AUTH0_CLIENT_ID', 'AUTH0_CLIENT_SECRET'):
+                self.assertEqual(parsed[key], old_auth[key])
+            for key in ('POOLER_HOST', 'PROJECT_REF', 'SSLROOTCERT'):
+                self.assertEqual(parsed[key], old_pg[key])
             self.assertNotIn('legacy-db-secret-not-to-copy', data)
             self.assertNotIn('CORE_DB_', data)
             before = target.read_bytes()
