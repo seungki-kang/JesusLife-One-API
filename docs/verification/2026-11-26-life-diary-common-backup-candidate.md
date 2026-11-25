@@ -65,3 +65,23 @@ not by the account-isolation RLS policy alone.
 Remove only the newly created container after verifying its exact name and
 jesuslife.purpose=ld-backup-isolated-test label. Its tmpfs data is disposable.
 Do not remove existing containers, volumes, application databases or user records.
+
+## Isolated launcher and Android verification — 2026-11-26
+
+- Added an explicit development launcher: common Supabase authentication plus
+  the disposable local PostgreSQL backup database.
+- Launcher tests: 7 PASS.
+- Full offline runner: 352 tests, 27 skipped, no failures.
+- NN_CommonAuth_Test: actual development login and synthetic completed-entry
+  backup succeeded.
+- Restoring the same backup returned alreadyPresent; no duplicate was created.
+- Consent withdrawal succeeded; subsequent restore returned HTTP 404.
+- A test recovery code was exposed in a screenshot. It must not be reused.
+  Consent was withdrawn and later download was denied.
+- Empty-target restoration and device-to-device recovery remain NOT_RUN.
+- Remote backup TLS, Supabase backup schema application, production deployment
+  and security audit remain NOT_RUN.
+- Supabase was used for existing authentication only; backup data stayed in the
+  disposable local database.
+- The launcher accepts passwords through stdin and writes no credential file.
+  The normal authentication-only launcher remains unchanged.
