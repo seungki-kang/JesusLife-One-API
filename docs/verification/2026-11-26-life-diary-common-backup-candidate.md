@@ -85,3 +85,15 @@ Do not remove existing containers, volumes, application databases or user record
   disposable local database.
 - The launcher accepts passwords through stdin and writes no credential file.
   The normal authentication-only launcher remains unchanged.
+
+## Empty-target Android recovery — 2026-11-26
+
+- Flutter Draft PR: seungki-kang/CHGO-Life-Diary-Flutter#24.
+- Flutter commit: 1b73a96.
+- Confirmed an empty target history in a separate development SQLite database.
+- Restored the retained synthetic completed-entry backup successfully.
+- Target history showed one entry and matching synthetic content.
+- Repeating recovery returned alreadyPresent.
+- Updates the earlier empty-target NOT_RUN within this same-device scope.
+- Different-device recovery, remote backup TLS and Supabase backup schema
+  application remain NOT_RUN.
