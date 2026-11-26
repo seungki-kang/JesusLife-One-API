@@ -97,3 +97,15 @@ Do not remove existing containers, volumes, application databases or user record
 - Updates the earlier empty-target NOT_RUN within this same-device scope.
 - Different-device recovery, remote backup TLS and Supabase backup schema
   application remain NOT_RUN.
+
+## Second-emulator recovery - 2026-11-26
+
+- Flutter verification commit: 9345aa0, CHGO-Life-Diary-Flutter PR #24.
+- Target: LD_Backup_Restore_Test, emulator-5558.
+- Same account as the source backup; target history confirmed empty before recovery.
+- Target history after recovery: one synthetic entry, content matched.
+- Repeated recovery returned alreadyPresent; no duplicate entry observed.
+- First success message was not captured; before/after states were user-confirmed.
+- Supersedes second-emulator NOT_RUN only.
+- Physical-device recovery, remote backup TLS, Supabase backup schema application
+  and production readiness remain unverified.
